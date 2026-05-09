@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+data-trend.db
+node_modules/
+dist/
+admin-web/dist/
+.DS_Store

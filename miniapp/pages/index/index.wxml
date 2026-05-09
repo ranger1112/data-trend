@@ -1,0 +1,59 @@
+<view class="page">
+  <view class="header">
+    <text class="eyebrow">data-trend</text>
+    <text class="title">城市房价趋势</text>
+    <text class="subtitle">最新周期 {{overview.latest_period || '暂无'}}</text>
+  </view>
+
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+
+  <view class="summary">
+    <view class="summaryItem">
+      <text>城市</text>
+      <strong>{{overview.regions || 0}}</strong>
+    </view>
+    <view class="summaryItem">
+      <text>指标</text>
+      <strong>{{overview.indicators || 0}}</strong>
+    </view>
+    <view class="summaryItem">
+      <text>已发布</text>
+      <strong>{{overview.published_values || 0}}</strong>
+    </view>
+  </view>
+
+  <view class="toolbar">
+    <picker mode="selector" range="{{regions}}" range-key="name" bindchange="onRegionChange">
+      <view class="select">{{currentRegion.name || '选择城市'}}</view>
+    </picker>
+    <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
+      <view class="select">{{currentIndicator.name || '选择指标'}}</view>
+    </picker>
+  </view>
+
+  <view class="panel">
+    <text class="panelTitle">最新一期</text>
+    <block wx:for="{{latestValues}}" wx:key="region">
+      <view class="row">
+        <view>
+          <text class="primary">{{item.region}}</text>
+          <text class="secondary">{{item.period}}</text>
+        </view>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
+    <view wx:if="{{latestValues.length === 0 && !loading}}" class="empty">暂无已发布数据</view>
+  </view>
+
+  <view class="panel">
+    <text class="panelTitle">趋势明细</text>
+    <block wx:for="{{trend}}" wx:key="period">
+      <view class="row">
+        <text>{{item.period}}</text>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
+    <view wx:if="{{trend.length === 0 && !loading}}" class="empty">暂无趋势数据</view>
+    <view wx:if="{{loading}}" class="empty">加载中...</view>
+  </view>
+</view>
