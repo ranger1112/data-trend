@@ -79,6 +79,9 @@ class HousingPriceImportRunner:
             for article in articles:
                 records.extend(self._parse_article(article, fallback_html=html))
 
+            if not records:
+                raise ValueError("no housing price records parsed from target url")
+
             imported = self.importer.import_records(records)
             repo.mark_job_finished(
                 self.db,
@@ -102,4 +105,3 @@ class HousingPriceImportRunner:
     def _parse_article(self, article: GovStatsArticle, fallback_html: str) -> list[HousingPriceRecord]:
         html = fallback_html if article.url.endswith("#inline") else self.fetcher.fetch(article.url)
         return self.article_parser.parse(html, source_url=article.url)
-

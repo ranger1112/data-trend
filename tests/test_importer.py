@@ -1,5 +1,5 @@
 from packages.crawler.housing_price.dto import HousingPriceRecord
-from packages.crawler.housing_price.importer import HousingPriceImporter
+from packages.crawler.housing_price.importer import HousingPriceImporter, HousingPriceImportRunner
 from packages.storage.models import Base, StatValue
 from packages.storage.session import create_engine_from_url, create_session_factory
 
@@ -29,3 +29,19 @@ def test_importer_is_idempotent(tmp_path):
 
         assert db.query(StatValue).count() == 3
 
+
+def test_runner_marks_empty_parse_as_failed(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'empty.db'}"
+    engine = create_engine_from_url(db_url)
+    Base.metadata.create_all(bind=engine)
+    session_factory = create_session_factory(db_url)
+
+    class EmptyFetcher:
+        def fetch(self, url):
+            return "<html><head><title>空页面</title></head><body></body></html>"
+
+    with session_factory() as db:
+        job = HousingPriceImportRunner(db, fetcher=EmptyFetcher()).run("https://example.test/empty.html")
+
+        assert job.status == "failed"
+        assert "no housing price records" in job.error_message

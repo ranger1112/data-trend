@@ -12,7 +12,7 @@ import {
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
-const DEFAULT_URL = "https://www.stats.gov.cn/sj/zxfb/index.html";
+const DEFAULT_URL = "https://www.stats.gov.cn/sj/zxfb/202604/t20260416_1963320.html";
 
 type Overview = {
   regions: number;

@@ -37,7 +37,7 @@ npm run dev
 ## 抓取命令
 
 ```bash
-python -m apps.worker.run_housing_price_import --url https://www.stats.gov.cn/sj/zxfb/index.html
+python -m apps.worker.run_housing_price_import --url https://www.stats.gov.cn/sj/zxfb/202604/t20260416_1963320.html
 ```
 
 也可以在管理端新增数据源后触发采集任务。API 会先创建 `pending` 任务，再通过 FastAPI
