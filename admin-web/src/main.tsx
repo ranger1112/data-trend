@@ -188,6 +188,34 @@ type PublishBatch = {
   created_at: string;
 };
 
+type OperationLog = {
+  id: number;
+  actor: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
+  source: string;
+  created_at: string;
+};
+
+type ReviewBatchPreview = {
+  action: string;
+  requested_count: number;
+  matched_count: number;
+  affected_count: number;
+  ignored_count: number;
+  region_count: number;
+  indicator_count: number;
+  periods: string[];
+  statuses: string[];
+  regions: string[];
+  indicators: string[];
+  sample_items: Record<string, unknown>[];
+};
+
 type OpsSummary = {
   jobs_last_24h: number;
   failed_jobs_last_24h: number;
@@ -225,6 +253,7 @@ function App() {
   const [qualityReports, setQualityReports] = useState<QualityReport[]>([]);
   const [configs, setConfigs] = useState<AppConfig[]>([]);
   const [publishBatches, setPublishBatches] = useState<PublishBatch[]>([]);
+  const [operationLogs, setOperationLogs] = useState<OperationLog[]>([]);
   const [opsSummary, setOpsSummary] = useState<OpsSummary | null>(null);
   const [records, setRecords] = useState<CrawlRecord[]>([]);
   const [statValues, setStatValues] = useState<StatValue[]>([]);
@@ -323,6 +352,7 @@ function App() {
       reportsRes,
       configsRes,
       batchesRes,
+      operationLogsRes,
       opsSummaryRes,
     ] = await Promise.all([
       request<Overview>("/mini/dashboard/overview"),
@@ -355,6 +385,7 @@ function App() {
       request<QualityReport[]>("/admin/quality-reports"),
       request<AppConfig[]>("/admin/configs"),
       request<PublishBatch[]>("/admin/publish-batches"),
+      request<OperationLog[]>("/admin/operation-logs"),
       request<OpsSummary>("/admin/ops/summary"),
     ]);
     setOverview(overviewRes);
@@ -377,6 +408,7 @@ function App() {
       return next;
     });
     setPublishBatches(batchesRes);
+    setOperationLogs(operationLogsRes);
     setOpsSummary(opsSummaryRes);
     setSelectedStatIds((ids) => ids.filter((id) => statValuesRes.some((value) => value.id === id)));
   }
@@ -476,6 +508,11 @@ function App() {
     if (selectedStatIds.length === 0) return;
     setPublishing(true);
     try {
+      const preview = await request<ReviewBatchPreview>("/admin/review-batches/publish/preview", {
+        method: "POST",
+        body: JSON.stringify({ ids: selectedStatIds }),
+      });
+      if (!window.confirm(formatBatchPreview(preview, "发布"))) return;
       await request<{ published: number }>("/admin/review-batches/publish", {
         method: "POST",
         body: JSON.stringify({ ids: selectedStatIds }),
@@ -490,6 +527,11 @@ function App() {
 
   async function rejectSelected() {
     if (selectedStatIds.length === 0) return;
+    const preview = await request<ReviewBatchPreview>("/admin/review-batches/reject/preview", {
+      method: "POST",
+      body: JSON.stringify({ ids: selectedStatIds, reason: rejectReason || "人工驳回" }),
+    });
+    if (!window.confirm(formatBatchPreview(preview, "驳回"))) return;
     await request<{ rejected: number }>("/admin/review-batches/reject", {
       method: "POST",
       body: JSON.stringify({ ids: selectedStatIds, reason: rejectReason || "人工驳回" }),
@@ -1127,6 +1169,23 @@ function App() {
       </section>
 
       <section className="panel">
+        <h2>操作日志</h2>
+        <DataTable
+          headers={["ID", "操作人", "动作", "对象", "原因", "变更摘要", "来源", "时间"]}
+          rows={operationLogs.map((log) => [
+            log.id,
+            log.actor,
+            formatOperationAction(log.action),
+            `${formatTargetType(log.target_type)} #${log.target_id ?? "-"}`,
+            log.reason ?? "-",
+            formatOperationDiff(log),
+            log.source,
+            formatDate(log.created_at),
+          ])}
+        />
+      </section>
+
+      <section className="panel">
         <h2>运营配置</h2>
         <div className="configGrid">
           {configs.map((config) => (
@@ -1263,6 +1322,52 @@ function formatHealth(health: DataSourceHealth | undefined) {
   const successRate = `${Math.round(health.success_rate * 100)}%`;
   const error = health.latest_error_type ? ` / ${health.latest_error_type}` : "";
   return `最近 ${status} / 成功率 ${successRate}${error}`;
+}
+
+function formatOperationAction(action: string) {
+  const labels: Record<string, string> = {
+    "app_config.update": "配置更新",
+    "data_source.create": "数据源创建",
+    "data_source.update": "数据源更新",
+    "indicator.update": "指标更新",
+    "review_batch.publish": "批量发布",
+    "review_batch.reject": "批量驳回",
+    "stat_value.update": "数据修正",
+  };
+  return labels[action] ?? action;
+}
+
+function formatTargetType(type: string) {
+  const labels: Record<string, string> = {
+    app_config: "配置",
+    data_source: "数据源",
+    indicator: "指标",
+    stat_value: "数据值",
+  };
+  return labels[type] ?? type;
+}
+
+function formatOperationDiff(log: OperationLog) {
+  if (log.after?.count !== undefined) return `影响 ${log.after.count} 条`;
+  const beforeKeys = log.before ? Object.keys(log.before) : [];
+  const afterKeys = log.after ? Object.keys(log.after) : [];
+  const keys = Array.from(new Set([...beforeKeys, ...afterKeys])).filter(
+    (key) => JSON.stringify(log.before?.[key]) !== JSON.stringify(log.after?.[key]),
+  );
+  return keys.slice(0, 4).join(" / ") || "-";
+}
+
+function formatBatchPreview(preview: ReviewBatchPreview, label: string) {
+  const regions = preview.regions.slice(0, 6).join(" / ") || "-";
+  const indicators = preview.indicators.slice(0, 6).join(" / ") || "-";
+  const periods = preview.periods.slice(0, 6).join(" / ") || "-";
+  return [
+    `确认${label} ${preview.affected_count} 条数据？`,
+    `已选择 ${preview.requested_count} 条，匹配 ${preview.matched_count} 条，忽略 ${preview.ignored_count} 条。`,
+    `影响城市 ${preview.region_count} 个：${regions}`,
+    `影响指标 ${preview.indicator_count} 个：${indicators}`,
+    `影响周期：${periods}`,
+  ].join("\n");
 }
 
 function formatQualityDetails(report: QualityReport) {

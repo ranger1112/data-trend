@@ -351,6 +351,22 @@ def test_indicator_config_and_quality_rules_are_configurable(tmp_path):
         headers=headers,
     )
     assert quality_config.status_code == 200
+
+    logs_response = client.get("/admin/operation-logs", headers=headers)
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    assert logs[0]["action"] == "app_config.update"
+    assert logs[0]["actor"] == "admin"
+    assert logs[0]["target_type"] == "app_config"
+    assert logs[0]["target_id"] == "quality.rules"
+    assert logs[0]["before"]["value"] != logs[0]["after"]["value"]
+    assert any(
+        item["action"] == "indicator.update"
+        and item["target_type"] == "indicator"
+        and item["target_id"] == "cpi_yoy"
+        for item in logs
+    )
+
     with session_factory() as db:
         job = repo.list_crawl_jobs(db)[-1]
         QualityChecker(source_type="cpi").check_job(db, job)
@@ -431,6 +447,149 @@ def test_quality_failed_values_are_not_published_and_rankings_use_published_only
     assert ranking_response.status_code == 200
     assert ranking_response.json()["top"] == []
     assert ranking_response.json()["bottom"] == []
+
+    app.dependency_overrides.clear()
+
+
+def test_operation_logs_capture_source_and_review_changes(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    source_response = client.post(
+        "/admin/data-sources",
+        json={
+            "name": "审计数据源",
+            "entry_url": "https://example.test/audit.html",
+            "source": "国家统计局",
+            "type": "housing_price",
+            "enabled": True,
+        },
+        headers=headers,
+    )
+    assert source_response.status_code == 200
+    source_id = source_response.json()["id"]
+
+    patch_source = client.patch(
+        f"/admin/data-sources/{source_id}",
+        json={"enabled": False},
+        headers=headers,
+    )
+    assert patch_source.status_code == 200
+
+    with session_factory() as db:
+        region = repo.get_or_create_region(db, "北京", "city")
+        indicator = repo.get_or_create_indicator(db, "housing_price_mom")
+        value = repo.upsert_stat_value(
+            db,
+            region_id=region.id,
+            indicator_id=indicator.id,
+            period=__import__("datetime").date(2025, 10, 1),
+            value=100.2,
+            source_id=source_id,
+            dimensions={"house_type": "new_house", "area_type": "none"},
+        )
+        value.status = "ready_for_review"
+        db.commit()
+        value_id = value.id
+
+    patch_value = client.patch(
+        f"/admin/stat-values/{value_id}",
+        json={"value": 100.4, "reason": "审计测试修正"},
+        headers=headers,
+    )
+    assert patch_value.status_code == 200
+
+    reject_response = client.post(
+        "/admin/review-batches/reject",
+        json={"ids": [value_id], "reason": "审计测试驳回"},
+        headers=headers,
+    )
+    assert reject_response.status_code == 200
+
+    logs_response = client.get("/admin/operation-logs", headers=headers)
+    assert logs_response.status_code == 200
+    logs = logs_response.json()
+    actions = [item["action"] for item in logs]
+    assert "data_source.create" in actions
+    assert "data_source.update" in actions
+    assert "stat_value.update" in actions
+    assert "review_batch.reject" in actions
+    reject_log = next(item for item in logs if item["action"] == "review_batch.reject")
+    assert reject_log["reason"] == "审计测试驳回"
+    assert reject_log["after"]["count"] == 1
+
+    filtered_response = client.get("/admin/operation-logs?target_type=data_source", headers=headers)
+    assert filtered_response.status_code == 200
+    assert {item["action"] for item in filtered_response.json()} == {
+        "data_source.create",
+        "data_source.update",
+    }
+
+    app.dependency_overrides.clear()
+
+
+def test_review_batch_preview_reports_impact_without_mutation(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    with session_factory() as db:
+        beijing = repo.get_or_create_region(db, "北京", "city")
+        shanghai = repo.get_or_create_region(db, "上海", "city")
+        indicator = repo.get_or_create_indicator(db, "housing_price_mom")
+        ready_value = repo.upsert_stat_value(
+            db,
+            region_id=beijing.id,
+            indicator_id=indicator.id,
+            period=__import__("datetime").date(2025, 10, 1),
+            value=100.2,
+            source_id=None,
+            dimensions={"house_type": "new_house", "area_type": "none"},
+        )
+        ignored_value = repo.upsert_stat_value(
+            db,
+            region_id=shanghai.id,
+            indicator_id=indicator.id,
+            period=__import__("datetime").date(2025, 10, 1),
+            value=99.8,
+            source_id=None,
+            dimensions={"house_type": "new_house", "area_type": "none"},
+        )
+        ready_value.status = "ready_for_review"
+        ignored_value.status = "draft"
+        db.commit()
+        ready_id = ready_value.id
+        ignored_id = ignored_value.id
+
+    preview_response = client.post(
+        "/admin/review-batches/publish/preview",
+        json={"ids": [ready_id, ignored_id, 999999]},
+        headers=headers,
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["requested_count"] == 3
+    assert preview["matched_count"] == 2
+    assert preview["affected_count"] == 1
+    assert preview["ignored_count"] == 2
+    assert preview["regions"] == ["北京"]
+    assert preview["indicators"] == ["housing_price_mom"]
+    assert preview["periods"] == ["2025-10-01"]
+
+    with session_factory() as db:
+        assert repo.get_stat_value(db, ready_id).status == "ready_for_review"
+        assert repo.get_stat_value(db, ignored_id).status == "draft"
+        assert repo.list_operation_logs(db) == []
+
+    reject_preview_response = client.post(
+        "/admin/review-batches/reject/preview",
+        json={"ids": [ready_id, ignored_id]},
+        headers=headers,
+    )
+    assert reject_preview_response.status_code == 200
+    reject_preview = reject_preview_response.json()
+    assert reject_preview["affected_count"] == 2
+    assert reject_preview["region_count"] == 2
+    assert reject_preview["statuses"] == ["draft", "ready_for_review"]
 
     app.dependency_overrides.clear()
 

@@ -128,6 +128,21 @@ class StatValuePublishRequest(BaseModel):
     reason: str | None = None
 
 
+class ReviewBatchPreviewOut(BaseModel):
+    action: str
+    requested_count: int
+    matched_count: int
+    affected_count: int
+    ignored_count: int
+    region_count: int
+    indicator_count: int
+    periods: list[str]
+    statuses: list[str]
+    regions: list[str]
+    indicators: list[str]
+    sample_items: list[dict[str, Any]]
+
+
 class AppConfigPatch(BaseModel):
     value: dict[str, Any]
     description: str | None = None
@@ -239,6 +254,21 @@ class OpsSummaryOut(BaseModel):
 class AlertTestOut(BaseModel):
     configured: bool
     message: str
+
+
+class OperationLogOut(BaseModel):
+    id: int
+    actor: str
+    action: str
+    target_type: str
+    target_id: str | None
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    reason: str | None
+    source: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TrendPoint(BaseModel):

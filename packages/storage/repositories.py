@@ -13,12 +13,63 @@ from packages.storage.models import (
     CrawlSchedule,
     DataSource,
     Indicator,
+    OperationLog,
     PublishBatch,
     QualityReport,
     Region,
     StatValueChange,
     StatValue,
 )
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def log_operation(
+    db: Session,
+    actor: str,
+    action: str,
+    target_type: str,
+    target_id: str | int | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    reason: str | None = None,
+    source: str = "admin-web",
+) -> OperationLog:
+    log = OperationLog(
+        actor=actor,
+        action=action,
+        target_type=target_type,
+        target_id=str(target_id) if target_id is not None else None,
+        before=_json_safe(before) if before is not None else None,
+        after=_json_safe(after) if after is not None else None,
+        reason=reason,
+        source=source,
+    )
+    db.add(log)
+    db.flush()
+    return log
+
+
+def list_operation_logs(
+    db: Session,
+    target_type: str | None = None,
+    action: str | None = None,
+    limit: int = 100,
+) -> list[OperationLog]:
+    statement = select(OperationLog)
+    if target_type:
+        statement = statement.where(OperationLog.target_type == target_type)
+    if action:
+        statement = statement.where(OperationLog.action == action)
+    return list(db.scalars(statement.order_by(OperationLog.id.desc()).limit(limit)))
 
 
 def create_data_source(
@@ -616,6 +667,26 @@ def serialize_indicator(indicator: Indicator) -> dict[str, Any]:
     }
 
 
+def serialize_data_source(data_source: DataSource) -> dict[str, Any]:
+    return {
+        "id": data_source.id,
+        "name": data_source.name,
+        "entry_url": data_source.entry_url,
+        "source": data_source.source,
+        "type": data_source.type,
+        "enabled": data_source.enabled,
+    }
+
+
+def serialize_app_config(config: AppConfig) -> dict[str, Any]:
+    return {
+        "key": config.key,
+        "value": config.value,
+        "description": config.description,
+        "updated_at": config.updated_at,
+    }
+
+
 def get_indicator_by_code(db: Session, code: str) -> Indicator | None:
     return db.scalar(select(Indicator).where(Indicator.code == code))
 
@@ -689,6 +760,7 @@ def update_stat_value(
 ) -> StatValue:
     before_value = stat_value.value
     before_status = stat_value.status
+    before_dimensions = dict(stat_value.dimensions or {})
     if value is not None:
         stat_value.value = value
     if status is not None:
@@ -707,6 +779,20 @@ def update_stat_value(
                 after_status=stat_value.status,
                 reason=reason,
             )
+        )
+        log_operation(
+            db,
+            actor=actor,
+            action="stat_value.update",
+            target_type="stat_value",
+            target_id=stat_value.id,
+            before={"value": before_value, "status": before_status, "dimensions": before_dimensions},
+            after={
+                "value": stat_value.value,
+                "status": stat_value.status,
+                "dimensions": stat_value.dimensions,
+            },
+            reason=reason,
         )
     db.commit()
     db.refresh(stat_value)
@@ -765,7 +851,36 @@ def serialize_stat_value(value: StatValue) -> dict[str, Any]:
     }
 
 
-def publish_stat_values(db: Session, ids: list[int]) -> int:
+def preview_stat_value_batch(db: Session, ids: list[int], action: str) -> dict[str, Any]:
+    values = list(
+        db.scalars(
+            select(StatValue)
+            .join(StatValue.region)
+            .join(StatValue.indicator)
+            .where(StatValue.id.in_(ids))
+            .order_by(StatValue.period.desc(), Region.name, Indicator.code)
+        )
+    )
+    actionable_values = [
+        value for value in values if action != "publish" or value.status == "ready_for_review"
+    ]
+    return {
+        "action": action,
+        "requested_count": len(ids),
+        "matched_count": len(values),
+        "affected_count": len(actionable_values),
+        "ignored_count": len(values) - len(actionable_values) + max(0, len(ids) - len(values)),
+        "region_count": len({value.region_id for value in actionable_values}),
+        "indicator_count": len({value.indicator_id for value in actionable_values}),
+        "periods": sorted({value.period.isoformat() for value in actionable_values}, reverse=True),
+        "statuses": sorted({value.status for value in values}),
+        "regions": sorted({value.region.name for value in actionable_values}),
+        "indicators": sorted({value.indicator.code for value in actionable_values}),
+        "sample_items": [serialize_stat_value(value) for value in actionable_values[:10]],
+    }
+
+
+def publish_stat_values(db: Session, ids: list[int], actor: str = "admin") -> int:
     values = list(
         db.scalars(
             select(StatValue).where(
@@ -774,7 +889,7 @@ def publish_stat_values(db: Session, ids: list[int]) -> int:
             )
         )
     )
-    batch = PublishBatch(action="publish", actor="admin", item_count=len(values))
+    batch = PublishBatch(action="publish", actor=actor, item_count=len(values))
     db.add(batch)
     for value in values:
         before_status = value.status
@@ -783,13 +898,22 @@ def publish_stat_values(db: Session, ids: list[int]) -> int:
         db.add(
             StatValueChange(
                 stat_value_id=value.id,
-                actor="admin",
+                actor=actor,
                 before_value=value.value,
                 after_value=value.value,
                 before_status=before_status,
                 after_status=value.status,
             )
         )
+    log_operation(
+        db,
+        actor=actor,
+        action="review_batch.publish",
+        target_type="stat_value",
+        target_id=",".join(str(value.id) for value in values),
+        before={"ids": ids, "from_status": "ready_for_review"},
+        after={"ids": [value.id for value in values], "status": "published", "count": len(values)},
+    )
     db.commit()
     return len(values)
 
@@ -799,9 +923,14 @@ def publish_draft_values(db: Session) -> int:
     return publish_stat_values(db, values)
 
 
-def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -> int:
+def reject_stat_values(
+    db: Session,
+    ids: list[int],
+    reason: str | None = None,
+    actor: str = "admin",
+) -> int:
     values = list(db.scalars(select(StatValue).where(StatValue.id.in_(ids))))
-    batch = PublishBatch(action="reject", actor="admin", item_count=len(values), reason=reason)
+    batch = PublishBatch(action="reject", actor=actor, item_count=len(values), reason=reason)
     db.add(batch)
     for value in values:
         before_status = value.status
@@ -810,7 +939,7 @@ def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -
         db.add(
             StatValueChange(
                 stat_value_id=value.id,
-                actor="admin",
+                actor=actor,
                 before_value=value.value,
                 after_value=value.value,
                 before_status=before_status,
@@ -818,6 +947,16 @@ def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -
                 reason=reason,
             )
         )
+    log_operation(
+        db,
+        actor=actor,
+        action="review_batch.reject",
+        target_type="stat_value",
+        target_id=",".join(str(value.id) for value in values),
+        before={"ids": ids},
+        after={"ids": [value.id for value in values], "status": "rejected", "count": len(values)},
+        reason=reason,
+    )
     db.commit()
     return len(values)
 

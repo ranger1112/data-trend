@@ -20,10 +20,12 @@ from apps.api.schemas import (
     DataSourceHealthOut,
     DataSourceOut,
     OpsSummaryOut,
+    OperationLogOut,
     DataSourcePatch,
     PublishBatchOut,
     QualityReportOut,
     QualityReportDetailOut,
+    ReviewBatchPreviewOut,
     ScheduleCreate,
     ScheduleOut,
     SchedulePatch,
@@ -31,7 +33,7 @@ from apps.api.schemas import (
     StatValuePatch,
     StatValuePublishRequest,
 )
-from apps.api.security import require_role
+from apps.api.security import AdminPrincipal, require_role
 from packages.crawler.cpi import importer as _cpi_importer
 from packages.crawler.housing_price import importer as _housing_price_importer
 from packages.pipeline.importers import UnsupportedDataSourceType, get_import_runner, list_importer_types
@@ -46,9 +48,9 @@ _ = (_housing_price_importer, _cpi_importer)
 def create_data_source(
     payload: DataSourceCreate,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("operator")),
+    principal: AdminPrincipal = Depends(require_role("operator")),
 ):
-    return repo.create_data_source(
+    data_source = repo.create_data_source(
         db,
         name=payload.name,
         entry_url=str(payload.entry_url),
@@ -56,6 +58,17 @@ def create_data_source(
         source_type=payload.type,
         enabled=payload.enabled,
     )
+    repo.log_operation(
+        db,
+        actor=principal.username,
+        action="data_source.create",
+        target_type="data_source",
+        target_id=data_source.id,
+        after=repo.serialize_data_source(data_source),
+    )
+    db.commit()
+    db.refresh(data_source)
+    return data_source
 
 
 @router.get("/data-sources", response_model=list[DataSourceOut])
@@ -90,12 +103,13 @@ def patch_data_source(
     data_source_id: int,
     payload: DataSourcePatch,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("operator")),
+    principal: AdminPrincipal = Depends(require_role("operator")),
 ):
     data_source = repo.get_data_source(db, data_source_id)
     if not data_source:
         raise HTTPException(status_code=404, detail="data source not found")
-    return repo.update_data_source(
+    before = repo.serialize_data_source(data_source)
+    updated = repo.update_data_source(
         db,
         data_source,
         name=payload.name,
@@ -104,6 +118,18 @@ def patch_data_source(
         source_type=payload.type,
         enabled=payload.enabled,
     )
+    repo.log_operation(
+        db,
+        actor=principal.username,
+        action="data_source.update",
+        target_type="data_source",
+        target_id=updated.id,
+        before=before,
+        after=repo.serialize_data_source(updated),
+    )
+    db.commit()
+    db.refresh(updated)
+    return updated
 
 
 @router.post("/crawl-jobs", response_model=CrawlJobOut)
@@ -314,7 +340,7 @@ def patch_stat_value(
     stat_value_id: int,
     payload: StatValuePatch,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("reviewer")),
+    principal: AdminPrincipal = Depends(require_role("reviewer")),
 ):
     stat_value = repo.get_stat_value(db, stat_value_id)
     if not stat_value:
@@ -325,7 +351,7 @@ def patch_stat_value(
         value=payload.value,
         status=payload.status,
         dimensions=payload.dimensions,
-        actor="admin",
+        actor=principal.username,
         reason=payload.reason,
     )
 
@@ -334,9 +360,9 @@ def patch_stat_value(
 def publish_stat_values(
     payload: StatValuePublishRequest,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("reviewer")),
+    principal: AdminPrincipal = Depends(require_role("reviewer")),
 ):
-    count = repo.publish_stat_values(db, payload.ids)
+    count = repo.publish_stat_values(db, payload.ids, actor=principal.username)
     return {"published": count}
 
 
@@ -355,18 +381,43 @@ def list_publish_batches(db: Session = Depends(get_db), _principal=Depends(requi
 def publish_review_batch(
     payload: StatValuePublishRequest,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("reviewer")),
+    principal: AdminPrincipal = Depends(require_role("reviewer")),
 ):
-    return {"published": repo.publish_stat_values(db, payload.ids)}
+    return {"published": repo.publish_stat_values(db, payload.ids, actor=principal.username)}
 
 
 @router.post("/review-batches/reject")
 def reject_review_batch(
     payload: StatValuePublishRequest,
     db: Session = Depends(get_db),
+    principal: AdminPrincipal = Depends(require_role("reviewer")),
+):
+    return {
+        "rejected": repo.reject_stat_values(
+            db,
+            payload.ids,
+            reason=payload.reason,
+            actor=principal.username,
+        )
+    }
+
+
+@router.post("/review-batches/publish/preview", response_model=ReviewBatchPreviewOut)
+def preview_publish_review_batch(
+    payload: StatValuePublishRequest,
+    db: Session = Depends(get_db),
     _principal=Depends(require_role("reviewer")),
 ):
-    return {"rejected": repo.reject_stat_values(db, payload.ids, reason=payload.reason)}
+    return repo.preview_stat_value_batch(db, payload.ids, action="publish")
+
+
+@router.post("/review-batches/reject/preview", response_model=ReviewBatchPreviewOut)
+def preview_reject_review_batch(
+    payload: StatValuePublishRequest,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
+):
+    return repo.preview_stat_value_batch(db, payload.ids, action="reject")
 
 
 @router.get("/quality-reports", response_model=list[QualityReportOut])
@@ -432,12 +483,25 @@ def patch_indicator(
     code: str,
     payload: IndicatorPatch,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("operator")),
+    principal: AdminPrincipal = Depends(require_role("operator")),
 ):
     indicator = repo.get_indicator_by_code(db, code)
     if not indicator:
         raise HTTPException(status_code=404, detail="indicator not found")
-    return repo.update_indicator(db, indicator, **payload.model_dump(exclude_unset=True))
+    before = repo.serialize_indicator(indicator)
+    updated = repo.update_indicator(db, indicator, **payload.model_dump(exclude_unset=True))
+    repo.log_operation(
+        db,
+        actor=principal.username,
+        action="indicator.update",
+        target_type="indicator",
+        target_id=updated.code,
+        before=before,
+        after=repo.serialize_indicator(updated),
+    )
+    db.commit()
+    db.refresh(updated)
+    return updated
 
 
 @router.get("/configs", response_model=list[AppConfigOut])
@@ -450,11 +514,36 @@ def patch_app_config(
     key: str,
     payload: AppConfigPatch,
     db: Session = Depends(get_db),
-    _principal=Depends(require_role("operator")),
+    principal: AdminPrincipal = Depends(require_role("operator")),
 ):
     if not isinstance(payload.value, dict):
         raise HTTPException(status_code=422, detail="config value must be an object")
-    return repo.update_app_config(db, key=key, value=payload.value, description=payload.description)
+    before_config = repo.get_app_config(db, key)
+    before = repo.serialize_app_config(before_config)
+    updated = repo.update_app_config(db, key=key, value=payload.value, description=payload.description)
+    repo.log_operation(
+        db,
+        actor=principal.username,
+        action="app_config.update",
+        target_type="app_config",
+        target_id=key,
+        before=before,
+        after=repo.serialize_app_config(updated),
+    )
+    db.commit()
+    db.refresh(updated)
+    return updated
+
+
+@router.get("/operation-logs", response_model=list[OperationLogOut])
+def list_operation_logs(
+    target_type: str | None = None,
+    action: str | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    return repo.list_operation_logs(db, target_type=target_type, action=action, limit=limit)
 
 
 def run_crawl_job(job_id: int, url: str, data_source_id: int | None) -> None:
