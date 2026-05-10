@@ -47,6 +47,15 @@ class DataSourceHealthOut(BaseModel):
     success_rate: float
 
 
+class DataSourceDetailOut(BaseModel):
+    data_source: DataSourceOut
+    health: DataSourceHealthOut | None
+    recent_jobs: list["CrawlJobOut"]
+    schedules: list["ScheduleOut"]
+    quality_reports: list["QualityReportOut"]
+    available_actions: list[str]
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1)
     password: str = Field(min_length=1)
@@ -95,6 +104,15 @@ class CrawlJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CrawlJobDetailOut(BaseModel):
+    job: CrawlJobOut
+    data_source: DataSourceOut | None
+    schedule: "ScheduleOut | None"
+    quality_reports: list["QualityReportOut"]
+    duration_seconds: int | None
+    retry_available: bool
+
+
 class StatValuePatch(BaseModel):
     value: float | None = None
     status: str | None = Field(
@@ -110,11 +128,28 @@ class StatValuePublishRequest(BaseModel):
     reason: str | None = None
 
 
+class AppConfigPatch(BaseModel):
+    value: dict[str, Any]
+    description: str | None = None
+
+
+class IndicatorPatch(BaseModel):
+    display_name: str | None = None
+    category: str | None = None
+    unit: str | None = None
+    description: str | None = None
+    precision: int | None = Field(default=None, ge=0, le=6)
+    sort_order: int | None = None
+    default_dimensions: dict[str, Any] | None = None
+    miniapp_visible: bool | None = None
+    default_chart_type: str | None = None
+
+
 class ScheduleCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     target_url: HttpUrl
     data_source_id: int | None = None
-    interval_minutes: int = Field(default=1440, ge=1)
+    interval_minutes: int | None = Field(default=None, ge=1)
     enabled: bool = True
     next_run_at: datetime | None = None
 
@@ -156,6 +191,12 @@ class QualityReportOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class QualityReportDetailOut(QualityReportOut):
+    error_details: list[dict[str, Any]]
+    warning_details: list[dict[str, Any]]
+    suggested_actions: list[str]
 
 
 class PublishBatchOut(BaseModel):
@@ -211,6 +252,9 @@ class RegionOut(BaseModel):
     name: str
     normalized_name: str
     level: str
+    parent_id: int | None = None
+    sort_order: int = 0
+    display_enabled: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -219,10 +263,23 @@ class IndicatorOut(BaseModel):
     id: int
     code: str
     name: str
+    display_name: str | None = None
+    category: str = "general"
     unit: str | None
     description: str | None
+    precision: int = 2
+    sort_order: int = 0
+    default_dimensions: dict[str, Any] = {}
+    miniapp_visible: bool = True
+    default_chart_type: str = "line"
 
     model_config = {"from_attributes": True}
+
+
+class IndicatorGroupOut(BaseModel):
+    category: str
+    name: str
+    items: list[IndicatorOut]
 
 
 class LatestValueOut(BaseModel):
@@ -263,3 +320,41 @@ class TrendResponse(BaseModel):
     items: list[TrendPoint]
     updated_at: datetime | None = None
     cache_ttl_seconds: int = 300
+
+
+class ComparisonTrendItem(BaseModel):
+    region_id: int
+    region: str
+    items: list[TrendPoint]
+
+
+class ComparisonTrendResponse(BaseModel):
+    indicator_code: str
+    series: list[ComparisonTrendItem]
+    updated_at: datetime | None = None
+    cache_ttl_seconds: int = 300
+
+
+class CityDetailOut(BaseModel):
+    region: dict[str, Any]
+    indicator_cards: list[dict[str, Any]]
+    updated_at: datetime | None
+    cache_ttl_seconds: int = 300
+
+
+class HomeRecommendationsOut(BaseModel):
+    recommended_indicators: list[IndicatorOut]
+    recommended_regions: list[dict[str, Any]]
+    ranking_indicator: str | None
+    default_trend_indicator: str | None
+    updated_at: datetime | None
+    cache_ttl_seconds: int = 300
+
+
+class AppConfigOut(BaseModel):
+    key: str
+    value: dict[str, Any]
+    description: str | None
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from packages.domain.constants import CPI_SOURCE_TYPE, HOUSING_PRICE_SOURCE_TYPE, INDICATORS
+from packages.domain.constants import CPI_SOURCE_TYPE, DEFAULT_APP_CONFIGS, HOUSING_PRICE_SOURCE_TYPE, INDICATORS
 from packages.storage.models import CrawlJob, Indicator, QualityReport, Region, StatValue
 
 
@@ -56,6 +56,9 @@ class QualityChecker:
         self.expected_indicators = expected_indicators or int(self.rules["expected_indicators"])
 
     def check_job(self, db: Session, job: CrawlJob) -> QualityResult:
+        self.rules = self._rules_from_config(db)
+        self.expected_regions = int(self.rules["expected_regions"])
+        self.expected_indicators = int(self.rules["expected_indicators"])
         period = self._latest_period_for_job(db, job)
         errors: list[str] = []
         warnings: list[str] = []
@@ -242,3 +245,18 @@ class QualityChecker:
             }
             for value in values
         ]
+
+    def _rules_from_config(self, db: Session) -> dict[str, Any]:
+        try:
+            from packages.storage import repositories as repo
+
+            configured = repo.get_app_config(db, "quality.rules").value
+        except Exception:
+            configured = {}
+        source_rules = configured.get(self.source_type, {}) if isinstance(configured, dict) else {}
+        if not source_rules:
+            source_rules = DEFAULT_APP_CONFIGS.get("quality.rules", {}).get(self.source_type, {})
+        return {
+            **QUALITY_RULES.get(self.source_type, QUALITY_RULES[HOUSING_PRICE_SOURCE_TYPE]),
+            **source_rules,
+        }

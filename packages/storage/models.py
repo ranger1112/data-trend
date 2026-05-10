@@ -99,6 +99,9 @@ class Region(Base):
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
     level: Mapped[str] = mapped_column(String(20), nullable=False, default="city")
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("regions.id"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    display_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class Indicator(Base):
@@ -109,6 +112,22 @@ class Indicator(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     unit: Mapped[str] = mapped_column(String(20), default="index")
     description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(50), default="general")
+    display_name: Mapped[str | None] = mapped_column(String(120))
+    precision: Mapped[int] = mapped_column(Integer, default=2)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    default_dimensions: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    miniapp_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    default_chart_type: Mapped[str] = mapped_column(String(40), default="line")
+
+
+class AppConfig(Base):
+    __tablename__ = "app_configs"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    description: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class StatValue(Base):

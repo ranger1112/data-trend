@@ -8,15 +8,22 @@ from apps.api.dependencies import get_db
 from apps.api.config import get_settings
 from apps.api.schemas import (
     AlertTestOut,
+    AppConfigOut,
+    AppConfigPatch,
+    IndicatorOut,
+    IndicatorPatch,
     CrawlJobCreate,
+    CrawlJobDetailOut,
     CrawlJobOut,
     DataSourceCreate,
+    DataSourceDetailOut,
     DataSourceHealthOut,
     DataSourceOut,
     OpsSummaryOut,
     DataSourcePatch,
     PublishBatchOut,
     QualityReportOut,
+    QualityReportDetailOut,
     ScheduleCreate,
     ScheduleOut,
     SchedulePatch,
@@ -66,6 +73,18 @@ def list_data_source_health(db: Session = Depends(get_db), _principal=Depends(re
     return repo.list_data_source_health(db)
 
 
+@router.get("/data-sources/{data_source_id}/detail", response_model=DataSourceDetailOut)
+def get_data_source_detail(
+    data_source_id: int,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    detail = repo.get_data_source_detail(db, data_source_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="data source not found")
+    return detail
+
+
 @router.patch("/data-sources/{data_source_id}", response_model=DataSourceOut)
 def patch_data_source(
     data_source_id: int,
@@ -108,12 +127,13 @@ def create_crawl_job(
     if repo.has_active_crawl_job(db, data_source.id if data_source else None, target_url):
         raise HTTPException(status_code=409, detail="crawl job already running for target")
 
+    defaults = repo.get_app_config(db, "data_source.defaults").value
     job = repo.create_crawl_job(
         db,
         data_source_id=data_source.id if data_source else None,
         target_url=target_url,
-        max_retries=get_settings().crawl_job_max_retries,
-        timeout_seconds=get_settings().crawl_job_timeout_seconds,
+        max_retries=int(defaults.get("max_retries", get_settings().crawl_job_max_retries)),
+        timeout_seconds=int(defaults.get("timeout_seconds", get_settings().crawl_job_timeout_seconds)),
     )
     if payload.run_now:
         background_tasks.add_task(run_crawl_job, job.id, target_url, data_source.id if data_source else None)
@@ -128,6 +148,18 @@ def list_crawl_jobs(
     _principal=Depends(require_role("readonly")),
 ):
     return repo.list_crawl_jobs(db, status=status, data_source_id=data_source_id)
+
+
+@router.get("/crawl-jobs/{job_id}/detail", response_model=CrawlJobDetailOut)
+def get_crawl_job_detail(
+    job_id: int,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    detail = repo.get_crawl_job_detail(db, job_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="crawl job not found")
+    return detail
 
 
 @router.post("/crawl-jobs/{job_id}/retry", response_model=CrawlJobOut)
@@ -167,12 +199,13 @@ def create_schedule(
 ):
     if payload.data_source_id and not repo.get_data_source(db, payload.data_source_id):
         raise HTTPException(status_code=404, detail="data source not found")
+    defaults = repo.get_app_config(db, "data_source.defaults").value
     return repo.create_schedule(
         db,
         name=payload.name,
         target_url=str(payload.target_url),
         data_source_id=payload.data_source_id,
-        interval_minutes=payload.interval_minutes,
+        interval_minutes=payload.interval_minutes or int(defaults.get("interval_minutes", 1440)),
         enabled=payload.enabled,
         next_run_at=payload.next_run_at,
     )
@@ -235,6 +268,7 @@ def list_stat_values(
     period: date | None = None,
     house_type: str | None = None,
     area_type: str | None = None,
+    data_source_id: int | None = None,
     db: Session = Depends(get_db),
     _principal=Depends(require_role("readonly")),
 ):
@@ -246,6 +280,7 @@ def list_stat_values(
         period=period,
         house_type=house_type,
         area_type=area_type,
+        data_source_id=data_source_id,
     )
     return [repo.serialize_stat_value(value) for value in values]
 
@@ -257,6 +292,7 @@ def list_review_items(
     period: date | None = None,
     house_type: str | None = None,
     area_type: str | None = None,
+    data_source_id: int | None = None,
     db: Session = Depends(get_db),
     _principal=Depends(require_role("reviewer")),
 ):
@@ -268,6 +304,7 @@ def list_review_items(
         period=period,
         house_type=house_type,
         area_type=area_type,
+        data_source_id=data_source_id,
     )
     return [repo.serialize_stat_value(value) for value in values]
 
@@ -337,6 +374,26 @@ def list_quality_reports(db: Session = Depends(get_db), _principal=Depends(requi
     return repo.list_quality_reports(db)
 
 
+@router.get("/quality-reports/{quality_report_id}", response_model=QualityReportDetailOut)
+def get_quality_report_detail(
+    quality_report_id: int,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    report = repo.get_quality_report(db, quality_report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="quality report not found")
+    details = report.details or []
+    error_details = [detail for detail in details if detail.get("severity") == "error"]
+    warning_details = [detail for detail in details if detail.get("severity") == "warning"]
+    return {
+        **report.__dict__,
+        "error_details": error_details,
+        "warning_details": warning_details,
+        "suggested_actions": ["复核异常值", "驳回问题数据", "暂缓发布"] if error_details else ["人工复核 warning"],
+    }
+
+
 @router.get("/stat-value-changes", response_model=list[StatValueChangeOut])
 def list_stat_value_changes(
     stat_value_id: int | None = None,
@@ -363,6 +420,41 @@ def test_alert(_principal=Depends(require_role("operator"))):
         "configured": configured,
         "message": "alert webhook configured" if configured else "alert webhook is not configured",
     }
+
+
+@router.get("/indicators", response_model=list[IndicatorOut])
+def list_admin_indicators(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
+    return repo.list_indicators(db)
+
+
+@router.patch("/indicators/{code}", response_model=IndicatorOut)
+def patch_indicator(
+    code: str,
+    payload: IndicatorPatch,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
+    indicator = repo.get_indicator_by_code(db, code)
+    if not indicator:
+        raise HTTPException(status_code=404, detail="indicator not found")
+    return repo.update_indicator(db, indicator, **payload.model_dump(exclude_unset=True))
+
+
+@router.get("/configs", response_model=list[AppConfigOut])
+def list_app_configs(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
+    return repo.list_app_configs(db)
+
+
+@router.patch("/configs/{key}", response_model=AppConfigOut)
+def patch_app_config(
+    key: str,
+    payload: AppConfigPatch,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
+    if not isinstance(payload.value, dict):
+        raise HTTPException(status_code=422, detail="config value must be an object")
+    return repo.update_app_config(db, key=key, value=payload.value, description=payload.description)
 
 
 def run_crawl_job(job_id: int, url: str, data_source_id: int | None) -> None:

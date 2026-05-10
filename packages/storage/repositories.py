@@ -5,8 +5,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from packages.domain.constants import INDICATORS
+from packages.domain.constants import DEFAULT_APP_CONFIGS, INDICATORS, INDICATOR_METADATA
 from packages.storage.models import (
+    AppConfig,
     CrawlJob,
     CrawlRecord,
     CrawlSchedule,
@@ -90,6 +91,38 @@ def list_data_source_health(db: Session) -> list[dict[str, Any]]:
             }
         )
     return items
+
+
+def get_data_source_detail(db: Session, data_source_id: int) -> dict[str, Any] | None:
+    data_source = get_data_source(db, data_source_id)
+    if not data_source:
+        return None
+    jobs = list_crawl_jobs(db, data_source_id=data_source_id)
+    schedules = list(
+        db.scalars(
+            select(CrawlSchedule)
+            .where(CrawlSchedule.data_source_id == data_source_id)
+            .order_by(CrawlSchedule.id.desc())
+        )
+    )
+    quality_reports = list(
+        db.scalars(
+            select(QualityReport)
+            .join(CrawlJob, QualityReport.crawl_job_id == CrawlJob.id)
+            .where(CrawlJob.data_source_id == data_source_id)
+            .order_by(QualityReport.id.desc())
+            .limit(10)
+        )
+    )
+    health = next((item for item in list_data_source_health(db) if item["id"] == data_source_id), None)
+    return {
+        "data_source": data_source,
+        "health": health,
+        "recent_jobs": jobs[:10],
+        "schedules": schedules,
+        "quality_reports": quality_reports,
+        "available_actions": ["run", "retry", "toggle", "edit_schedule"],
+    }
 
 
 def get_data_source(db: Session, data_source_id: int) -> DataSource | None:
@@ -304,6 +337,30 @@ def list_crawl_jobs(
     return list(db.scalars(statement))
 
 
+def get_crawl_job_detail(db: Session, job_id: int) -> dict[str, Any] | None:
+    job = db.get(CrawlJob, job_id)
+    if not job:
+        return None
+    quality_reports = list(
+        db.scalars(
+            select(QualityReport)
+            .where(QualityReport.crawl_job_id == job_id)
+            .order_by(QualityReport.id.desc())
+        )
+    )
+    duration_seconds = None
+    if job.started_at and job.finished_at:
+        duration_seconds = int((job.finished_at - job.started_at).total_seconds())
+    return {
+        "job": job,
+        "data_source": job.data_source,
+        "schedule": job.schedule,
+        "quality_reports": quality_reports,
+        "duration_seconds": duration_seconds,
+        "retry_available": bool(job.target_url and job.status in {"failed", "cancelled"}),
+    }
+
+
 def get_recent_failed_jobs(db: Session, limit: int = 20) -> list[CrawlJob]:
     return list(
         db.scalars(
@@ -461,33 +518,125 @@ def list_crawl_records(
     return list(db.scalars(statement))
 
 
-def get_or_create_region(db: Session, name: str, level: str) -> Region:
+def get_or_create_region(db: Session, name: str, level: str, parent_id: int | None = None) -> Region:
     normalized_name = normalize_region_name(name)
     region = db.scalar(select(Region).where(Region.normalized_name == normalized_name))
     if region:
+        if parent_id is not None and region.parent_id != parent_id:
+            region.parent_id = parent_id
         return region
-    region = Region(name=name, normalized_name=normalized_name, level=level)
+    region = Region(name=name, normalized_name=normalized_name, level=level, parent_id=parent_id)
     db.add(region)
     db.flush()
     return region
 
 
 def list_regions(db: Session) -> list[Region]:
-    return list(db.scalars(select(Region).order_by(Region.name)))
+    return list(db.scalars(select(Region).order_by(Region.sort_order, Region.level, Region.name)))
 
 
 def get_or_create_indicator(db: Session, code: str) -> Indicator:
     indicator = db.scalar(select(Indicator).where(Indicator.code == code))
     if indicator:
+        apply_indicator_metadata(indicator)
         return indicator
-    indicator = Indicator(code=code, name=INDICATORS.get(code, code), unit="index")
+    meta = INDICATOR_METADATA.get(code, {})
+    indicator = Indicator(
+        code=code,
+        name=INDICATORS.get(code, code),
+        unit=meta.get("unit", "index"),
+        description=meta.get("description"),
+        category=meta.get("category", "general"),
+        display_name=meta.get("display_name"),
+        precision=meta.get("precision", 2),
+        sort_order=meta.get("sort_order", 0),
+        default_dimensions=meta.get("default_dimensions", {}),
+        miniapp_visible=meta.get("miniapp_visible", True),
+        default_chart_type=meta.get("default_chart_type", "line"),
+    )
     db.add(indicator)
     db.flush()
     return indicator
 
 
 def list_indicators(db: Session) -> list[Indicator]:
-    return list(db.scalars(select(Indicator).order_by(Indicator.code)))
+    indicators = list(db.scalars(select(Indicator).order_by(Indicator.sort_order, Indicator.code)))
+    for indicator in indicators:
+        apply_indicator_metadata(indicator)
+    return indicators
+
+
+def apply_indicator_metadata(indicator: Indicator) -> Indicator:
+    meta = INDICATOR_METADATA.get(indicator.code, {})
+    if not meta:
+        return indicator
+    indicator.category = indicator.category or meta.get("category", "general")
+    indicator.display_name = indicator.display_name or meta.get("display_name")
+    indicator.unit = indicator.unit or meta.get("unit", "index")
+    indicator.description = indicator.description or meta.get("description")
+    indicator.precision = indicator.precision if indicator.precision is not None else meta.get("precision", 2)
+    indicator.sort_order = indicator.sort_order if indicator.sort_order is not None else meta.get("sort_order", 0)
+    indicator.default_dimensions = indicator.default_dimensions or meta.get("default_dimensions", {})
+    indicator.default_chart_type = indicator.default_chart_type or meta.get("default_chart_type", "line")
+    return indicator
+
+
+def group_indicators_for_display(db: Session) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    labels = {
+        "housing_price": "房价指标",
+        "cpi": "居民消费价格",
+        "general": "其他指标",
+    }
+    for indicator in list_indicators(db):
+        if not indicator.miniapp_visible:
+            continue
+        group = groups.setdefault(
+            indicator.category,
+            {"category": indicator.category, "name": labels.get(indicator.category, indicator.category), "items": []},
+        )
+        group["items"].append(serialize_indicator(indicator))
+    return sorted(groups.values(), key=lambda item: item["items"][0]["sort_order"] if item["items"] else 0)
+
+
+def serialize_indicator(indicator: Indicator) -> dict[str, Any]:
+    return {
+        "id": indicator.id,
+        "code": indicator.code,
+        "name": indicator.name,
+        "display_name": indicator.display_name or indicator.name,
+        "category": indicator.category,
+        "unit": indicator.unit,
+        "description": indicator.description,
+        "precision": indicator.precision,
+        "sort_order": indicator.sort_order,
+        "default_dimensions": indicator.default_dimensions or {},
+        "miniapp_visible": indicator.miniapp_visible,
+        "default_chart_type": indicator.default_chart_type,
+    }
+
+
+def get_indicator_by_code(db: Session, code: str) -> Indicator | None:
+    return db.scalar(select(Indicator).where(Indicator.code == code))
+
+
+def update_indicator(db: Session, indicator: Indicator, **changes: Any) -> Indicator:
+    for field in [
+        "display_name",
+        "category",
+        "unit",
+        "description",
+        "precision",
+        "sort_order",
+        "default_dimensions",
+        "miniapp_visible",
+        "default_chart_type",
+    ]:
+        if field in changes and changes[field] is not None:
+            setattr(indicator, field, changes[field])
+    db.commit()
+    db.refresh(indicator)
+    return indicator
 
 
 def upsert_stat_value(
@@ -572,6 +721,7 @@ def list_stat_values(
     period: date | None = None,
     house_type: str | None = None,
     area_type: str | None = None,
+    data_source_id: int | None = None,
 ) -> list[StatValue]:
     statement = select(StatValue).join(StatValue.region).join(StatValue.indicator)
     if status:
@@ -582,6 +732,8 @@ def list_stat_values(
         statement = statement.where(Indicator.code == indicator_code)
     if period:
         statement = statement.where(StatValue.period == period)
+    if data_source_id:
+        statement = statement.where(StatValue.source_id == data_source_id)
     statement = statement.order_by(StatValue.period.desc(), Region.name, Indicator.code).limit(200)
     values = list(db.scalars(statement))
     return [
@@ -600,6 +752,10 @@ def serialize_stat_value(value: StatValue) -> dict[str, Any]:
         "indicator_id": value.indicator_id,
         "indicator_code": value.indicator.code,
         "indicator_name": value.indicator.name,
+        "indicator_display_name": value.indicator.display_name or value.indicator.name,
+        "indicator_category": value.indicator.category,
+        "unit": value.indicator.unit,
+        "precision": value.indicator.precision,
         "period": value.period,
         "value": value.value,
         "dimensions": value.dimensions,
@@ -668,6 +824,10 @@ def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -
 
 def list_quality_reports(db: Session) -> list[QualityReport]:
     return list(db.scalars(select(QualityReport).order_by(QualityReport.id.desc()).limit(100)))
+
+
+def get_quality_report(db: Session, quality_report_id: int) -> QualityReport | None:
+    return db.get(QualityReport, quality_report_id)
 
 
 def get_ops_summary(db: Session, now: datetime | None = None) -> dict[str, Any]:
@@ -742,6 +902,55 @@ def get_published_trend(
             continue
         items.append({"period": value.period, "value": value.value, "dimensions": value.dimensions})
     return items
+
+
+def get_published_comparison_trends(
+    db: Session,
+    region_ids: list[int],
+    indicator_code: str,
+    house_type: str | None = None,
+    area_type: str | None = None,
+) -> list[dict[str, Any]]:
+    regions = {region.id: region for region in db.scalars(select(Region).where(Region.id.in_(region_ids)))}
+    return [
+        {
+            "region_id": region_id,
+            "region": regions[region_id].name,
+            "items": get_published_trend(db, region_id, indicator_code, house_type=house_type, area_type=area_type),
+        }
+        for region_id in region_ids
+        if region_id in regions
+    ]
+
+
+def get_city_detail(db: Session, region_id: int) -> dict[str, Any] | None:
+    region = db.get(Region, region_id)
+    if not region:
+        return None
+    cards = []
+    for indicator in list_indicators(db):
+        if not indicator.miniapp_visible:
+            continue
+        latest = get_latest_published_values(db, indicator.code)
+        region_value = next((item for item in latest if item["region_id"] == region_id), None)
+        if region_value:
+            cards.append(
+                {
+                    **region_value,
+                    "indicator": serialize_indicator(indicator),
+                }
+            )
+    return {
+        "region": {
+            "id": region.id,
+            "name": region.name,
+            "normalized_name": region.normalized_name,
+            "level": region.level,
+            "parent_id": region.parent_id,
+        },
+        "indicator_cards": cards,
+        "updated_at": get_latest_published_update_time(db),
+    }
 
 
 def get_latest_published_update_time(db: Session) -> datetime | None:
@@ -832,6 +1041,58 @@ def get_dashboard_overview(db: Session) -> dict[str, Any]:
         "latest_period": db.scalar(
             select(func.max(StatValue.period)).where(StatValue.status == "published")
         ),
+    }
+
+
+def get_app_config(db: Session, key: str) -> AppConfig:
+    config = db.get(AppConfig, key)
+    if config:
+        return config
+    config = AppConfig(
+        key=key,
+        value=DEFAULT_APP_CONFIGS.get(key, {}),
+        description=f"default config for {key}",
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def list_app_configs(db: Session) -> list[AppConfig]:
+    for key in DEFAULT_APP_CONFIGS:
+        get_app_config(db, key)
+    return list(db.scalars(select(AppConfig).order_by(AppConfig.key)))
+
+
+def update_app_config(db: Session, key: str, value: dict[str, Any], description: str | None = None) -> AppConfig:
+    config = get_app_config(db, key)
+    config.value = value
+    if description is not None:
+        config.description = description
+    config.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def get_home_recommendations(db: Session) -> dict[str, Any]:
+    config = get_app_config(db, "miniapp.home").value
+    indicators = {indicator.code: serialize_indicator(indicator) for indicator in list_indicators(db)}
+    regions = {region.name: region for region in list_regions(db)}
+    recommended_regions = [
+        {"id": region.id, "name": region.name, "level": region.level}
+        for name in config.get("recommended_regions", [])
+        if (region := regions.get(name))
+    ]
+    return {
+        "recommended_indicators": [
+            indicators[code] for code in config.get("recommended_indicators", []) if code in indicators
+        ],
+        "recommended_regions": recommended_regions,
+        "ranking_indicator": config.get("ranking_indicator"),
+        "default_trend_indicator": config.get("default_trend_indicator"),
+        "updated_at": get_latest_published_update_time(db),
     }
 
 

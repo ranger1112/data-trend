@@ -76,6 +76,7 @@ def test_admin_data_source_update_and_job_creation(tmp_path):
     assert job_response.status_code == 200
     assert job_response.json()["status"] == "pending"
     assert job_response.json()["target_url"] == "https://example.test/list.html"
+    assert job_response.json()["max_retries"] == 3
 
     duplicate_response = client.post(
         "/admin/crawl-jobs",
@@ -87,10 +88,22 @@ def test_admin_data_source_update_and_job_creation(tmp_path):
     filtered_jobs = client.get("/admin/crawl-jobs?status=pending", headers=headers)
     assert filtered_jobs.status_code == 200
     assert len(filtered_jobs.json()) == 1
+    job_id = filtered_jobs.json()[0]["id"]
+
+    job_detail_response = client.get(f"/admin/crawl-jobs/{job_id}/detail", headers=headers)
+    assert job_detail_response.status_code == 200
+    assert job_detail_response.json()["job"]["id"] == job_id
+    assert job_detail_response.json()["retry_available"] is False
 
     health_response = client.get("/admin/data-sources/health", headers=headers)
     assert health_response.status_code == 200
     assert health_response.json()[0]["latest_job_status"] == "pending"
+
+    detail_response = client.get(f"/admin/data-sources/{data_source['id']}/detail", headers=headers)
+    assert detail_response.status_code == 200
+    assert detail_response.json()["data_source"]["id"] == data_source["id"]
+    assert detail_response.json()["recent_jobs"][0]["status"] == "pending"
+    assert "run" in detail_response.json()["available_actions"]
 
     app.dependency_overrides.clear()
 
@@ -129,6 +142,32 @@ def test_schedule_creates_due_jobs_and_supports_cancel(tmp_path):
     app.dependency_overrides.clear()
 
 
+def test_schedule_uses_configured_default_interval(tmp_path):
+    client, _ = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    config_response = client.patch(
+        "/admin/configs/data_source.defaults",
+        json={"value": {"interval_minutes": 30, "max_retries": 3, "timeout_seconds": 1800}},
+        headers=headers,
+    )
+    assert config_response.status_code == 200
+
+    schedule_response = client.post(
+        "/admin/schedules",
+        json={
+            "name": "默认间隔调度",
+            "target_url": "https://example.test/default-interval.html",
+            "enabled": True,
+        },
+        headers=headers,
+    )
+    assert schedule_response.status_code == 200
+    assert schedule_response.json()["interval_minutes"] == 30
+
+    app.dependency_overrides.clear()
+
+
 def test_admin_stat_value_publish_flow(tmp_path):
     client, session_factory = make_client(tmp_path)
     headers = auth_headers(client)
@@ -162,10 +201,21 @@ def test_admin_stat_value_publish_flow(tmp_path):
         )
         db.commit()
         value.status = "ready_for_review"
+        value.source_id = repo.get_or_create_data_source(
+            db,
+            name="筛选数据源",
+            entry_url="https://example.test/source.html",
+            source="国家统计局",
+            source_type="housing_price",
+        ).id
         db.commit()
         value_id = value.id
+        source_id = value.source_id
 
-    list_response = client.get("/admin/review-items?indicator_code=housing_price_mom", headers=headers)
+    list_response = client.get(
+        f"/admin/review-items?indicator_code=housing_price_mom&data_source_id={source_id}",
+        headers=headers,
+    )
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == value_id
 
@@ -220,6 +270,92 @@ def test_admin_stat_value_publish_flow(tmp_path):
     )
     assert empty_mini_response.status_code == 200
     assert empty_mini_response.json()["items"] == []
+
+    app.dependency_overrides.clear()
+
+
+def test_indicator_config_and_quality_rules_are_configurable(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    with session_factory() as db:
+        indicator = repo.get_or_create_indicator(db, "cpi_yoy")
+        region = repo.get_or_create_region(db, "全国", "country")
+        job = repo.create_crawl_job(db, target_url="https://example.test/cpi.html")
+        repo.mark_job_running(db, job)
+        value = repo.upsert_stat_value(
+            db,
+            region_id=region.id,
+            indicator_id=indicator.id,
+            period=__import__("datetime").date(2026, 3, 1),
+            value=18.0,
+            source_id=None,
+            dimensions={"source_type": "cpi", "frequency": "monthly"},
+        )
+        db.commit()
+        value_id = value.id
+
+    patch_indicator = client.patch(
+        "/admin/indicators/cpi_yoy",
+        json={"display_name": "居民消费价格同比", "miniapp_visible": False, "sort_order": 999},
+        headers=headers,
+    )
+    assert patch_indicator.status_code == 200
+    assert patch_indicator.json()["display_name"] == "居民消费价格同比"
+    indicators_response = client.get("/admin/indicators", headers=headers)
+    assert indicators_response.status_code == 200
+    assert any(item["code"] == "cpi_yoy" and item["miniapp_visible"] is False for item in indicators_response.json())
+
+    defaults_response = client.patch(
+        "/admin/configs/data_source.defaults",
+        json={"value": {"max_retries": 5, "timeout_seconds": 90, "interval_minutes": 60}},
+        headers=headers,
+    )
+    assert defaults_response.status_code == 200
+    source_response = client.post(
+        "/admin/data-sources",
+        json={
+            "name": "配置默认源",
+            "entry_url": "https://example.test/default.html",
+            "source": "test",
+            "type": "unknown",
+            "enabled": True,
+        },
+        headers=headers,
+    )
+    job_response = client.post(
+        "/admin/crawl-jobs",
+        json={"data_source_id": source_response.json()["id"], "run_now": False},
+        headers=headers,
+    )
+    assert job_response.status_code == 200
+    assert job_response.json()["max_retries"] == 5
+    assert job_response.json()["timeout_seconds"] == 90
+
+    quality_config = client.patch(
+        "/admin/configs/quality.rules",
+        json={
+            "value": {
+                "cpi": {
+                    "expected_regions": 1,
+                    "expected_indicators": 1,
+                    "min_values": 1,
+                    "required_dimensions": ["source_type", "frequency"],
+                    "value_min": -30,
+                    "value_max": 30,
+                    "warning_value_min": -25,
+                    "warning_value_max": 25,
+                }
+            }
+        },
+        headers=headers,
+    )
+    assert quality_config.status_code == 200
+    with session_factory() as db:
+        job = repo.list_crawl_jobs(db)[-1]
+        QualityChecker(source_type="cpi").check_job(db, job)
+        checked_value = repo.get_stat_value(db, value_id)
+        assert checked_value.status == "ready_for_review"
 
     app.dependency_overrides.clear()
 
@@ -330,6 +466,11 @@ def test_quality_report_details_locate_failed_values(tmp_path):
     assert value_detail["period"] == "2026-03-01"
     assert value_detail["dimensions"] == {"source_type": "cpi"}
 
+    detail_response = client.get(f"/admin/quality-reports/{report['id']}", headers=headers)
+    assert detail_response.status_code == 200
+    assert any(detail["rule"] == "value_range" for detail in detail_response.json()["error_details"])
+    assert "复核异常值" in detail_response.json()["suggested_actions"]
+
     app.dependency_overrides.clear()
 
 
@@ -396,6 +537,91 @@ def test_mini_api_exposes_cpi_values(tmp_path):
     ranking_response = client.get("/mini/rankings?indicator_code=cpi_yoy")
     assert ranking_response.status_code == 200
     assert ranking_response.json()["top"][0]["value"] == -0.1
+
+    app.dependency_overrides.clear()
+
+
+def test_productized_metadata_config_and_mini_aggregates(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    with session_factory() as db:
+        province = repo.get_or_create_region(db, "华北", "province")
+        beijing = repo.get_or_create_region(db, "北京", "city", parent_id=province.id)
+        shanghai = repo.get_or_create_region(db, "上海", "city")
+        indicator = repo.get_or_create_indicator(db, "housing_price_mom")
+        cpi_indicator = repo.get_or_create_indicator(db, "cpi_yoy")
+        for region, first, second in [(beijing, 99.8, 101.2), (shanghai, 98.8, 100.2)]:
+            for period, value in [
+                (__import__("datetime").date(2025, 9, 1), first),
+                (__import__("datetime").date(2025, 10, 1), second),
+            ]:
+                stat_value = repo.upsert_stat_value(
+                    db,
+                    region_id=region.id,
+                    indicator_id=indicator.id,
+                    period=period,
+                    value=value,
+                    source_id=None,
+                    dimensions={"house_type": "new_house", "area_type": "none"},
+                )
+                stat_value.status = "published"
+        cpi_value = repo.upsert_stat_value(
+            db,
+            region_id=province.id,
+            indicator_id=cpi_indicator.id,
+            period=__import__("datetime").date(2025, 10, 1),
+            value=0.2,
+            source_id=None,
+            dimensions={"source_type": "cpi", "frequency": "monthly"},
+        )
+        cpi_value.status = "published"
+        db.commit()
+        beijing_id = beijing.id
+        shanghai_id = shanghai.id
+
+    groups_response = client.get("/mini/indicator-groups")
+    assert groups_response.status_code == 200
+    groups = groups_response.json()
+    assert groups[0]["items"][0]["display_name"] == "住宅价格环比"
+    assert {group["category"] for group in groups} >= {"housing_price", "cpi"}
+
+    city_response = client.get(f"/mini/regions/{beijing_id}/detail")
+    assert city_response.status_code == 200
+    assert city_response.json()["region"]["parent_id"] is not None
+    assert city_response.json()["indicator_cards"][0]["indicator"]["category"] == "housing_price"
+
+    compare_response = client.get(
+        f"/mini/stat-values/compare?region_ids={beijing_id},{shanghai_id}&indicator_code=housing_price_mom"
+    )
+    assert compare_response.status_code == 200
+    assert [series["region"] for series in compare_response.json()["series"]] == ["北京", "上海"]
+    assert len(compare_response.json()["series"][0]["items"]) == 2
+
+    config_response = client.get("/admin/configs", headers=headers)
+    assert config_response.status_code == 200
+    assert any(item["key"] == "miniapp.home" for item in config_response.json())
+
+    patch_response = client.patch(
+        "/admin/configs/miniapp.home",
+        json={
+            "value": {
+                "recommended_indicators": ["cpi_yoy"],
+                "recommended_regions": ["华北"],
+                "ranking_indicator": "cpi_yoy",
+                "default_trend_indicator": "cpi_yoy",
+            },
+            "description": "测试首页配置",
+        },
+        headers=headers,
+    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["value"]["ranking_indicator"] == "cpi_yoy"
+
+    recommendations_response = client.get("/mini/home/recommendations")
+    assert recommendations_response.status_code == 200
+    assert recommendations_response.json()["recommended_indicators"][0]["code"] == "cpi_yoy"
+    assert recommendations_response.json()["recommended_regions"][0]["name"] == "华北"
 
     app.dependency_overrides.clear()
 
