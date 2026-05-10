@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   CheckCircle2,
+  AlertTriangle,
   Database,
   FileText,
   Filter,
@@ -112,6 +113,17 @@ type PublishBatch = {
   created_at: string;
 };
 
+type OpsSummary = {
+  jobs_last_24h: number;
+  failed_jobs_last_24h: number;
+  pending_jobs: number;
+  running_jobs: number;
+  quality_failed_reports: number;
+  review_pending_values: number;
+  last_success_at: string | null;
+  next_schedule_at: string | null;
+};
+
 type DataSourceForm = {
   name: string;
   entry_url: string;
@@ -129,6 +141,7 @@ function App() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [qualityReports, setQualityReports] = useState<QualityReport[]>([]);
   const [publishBatches, setPublishBatches] = useState<PublishBatch[]>([]);
+  const [opsSummary, setOpsSummary] = useState<OpsSummary | null>(null);
   const [records, setRecords] = useState<CrawlRecord[]>([]);
   const [statValues, setStatValues] = useState<StatValue[]>([]);
   const [sourceForm, setSourceForm] = useState<DataSourceForm>({
@@ -185,6 +198,7 @@ function App() {
       schedulesRes,
       reportsRes,
       batchesRes,
+      opsSummaryRes,
     ] = await Promise.all([
       request<Overview>("/mini/dashboard/overview"),
       request<DataSource[]>("/admin/data-sources"),
@@ -212,6 +226,7 @@ function App() {
       request<Schedule[]>("/admin/schedules"),
       request<QualityReport[]>("/admin/quality-reports"),
       request<PublishBatch[]>("/admin/publish-batches"),
+      request<OpsSummary>("/admin/ops/summary"),
     ]);
     setOverview(overviewRes);
     setDataSources(sourcesRes);
@@ -223,6 +238,7 @@ function App() {
     setSchedules(schedulesRes);
     setQualityReports(reportsRes);
     setPublishBatches(batchesRes);
+    setOpsSummary(opsSummaryRes);
     setSelectedStatIds((ids) => ids.filter((id) => statValuesRes.some((value) => value.id === id)));
   }
 
@@ -385,6 +401,39 @@ function App() {
         <Metric icon={<CheckCircle2 />} label="已发布数据" value={overview?.published_values ?? 0} />
         <Metric icon={<ListChecks />} label="质量报告" value={qualityReports.length} />
         <Metric icon={<Play />} label="运行中任务" value={activeJobs} />
+      </section>
+
+      <section className="opsStrip">
+        <OpsCard
+          tone={(opsSummary?.failed_jobs_last_24h ?? 0) > 0 ? "danger" : "normal"}
+          label="24h 失败任务"
+          value={opsSummary?.failed_jobs_last_24h ?? 0}
+          detail={`总任务 ${opsSummary?.jobs_last_24h ?? 0}`}
+        />
+        <OpsCard
+          tone={(opsSummary?.quality_failed_reports ?? 0) > 0 ? "danger" : "normal"}
+          label="质量失败"
+          value={opsSummary?.quality_failed_reports ?? 0}
+          detail="报告累计"
+        />
+        <OpsCard
+          tone={(opsSummary?.review_pending_values ?? 0) > 0 ? "warning" : "normal"}
+          label="待审核"
+          value={opsSummary?.review_pending_values ?? 0}
+          detail="数据积压"
+        />
+        <OpsCard
+          tone={(opsSummary?.pending_jobs ?? 0) + (opsSummary?.running_jobs ?? 0) > 0 ? "warning" : "normal"}
+          label="排队/运行"
+          value={`${opsSummary?.pending_jobs ?? 0}/${opsSummary?.running_jobs ?? 0}`}
+          detail={`下次 ${formatDate(opsSummary?.next_schedule_at ?? null)}`}
+        />
+        <OpsCard
+          tone="normal"
+          label="最近成功"
+          value={formatDate(opsSummary?.last_success_at ?? null)}
+          detail="抓取完成时间"
+        />
       </section>
 
       <section className="grid">
@@ -698,6 +747,29 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
       <div className="metricIcon">{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
+    </article>
+  );
+}
+
+function OpsCard({
+  tone,
+  label,
+  value,
+  detail,
+}: {
+  tone: "normal" | "warning" | "danger";
+  label: string;
+  value: number | string;
+  detail: string;
+}) {
+  return (
+    <article className={`opsCard ${tone}`}>
+      <div className="opsIcon">
+        <AlertTriangle size={18} />
+      </div>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
     </article>
   );
 }

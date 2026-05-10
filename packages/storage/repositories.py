@@ -1,5 +1,5 @@
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -164,6 +164,17 @@ def list_crawl_jobs(
         statement = statement.where(CrawlJob.data_source_id == data_source_id)
     statement = statement.order_by(CrawlJob.id.desc()).limit(100)
     return list(db.scalars(statement))
+
+
+def get_recent_failed_jobs(db: Session, limit: int = 20) -> list[CrawlJob]:
+    return list(
+        db.scalars(
+            select(CrawlJob)
+            .where(CrawlJob.status == "failed")
+            .order_by(CrawlJob.id.desc())
+            .limit(limit)
+        )
+    )
 
 
 def create_schedule(
@@ -514,6 +525,40 @@ def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -
 
 def list_quality_reports(db: Session) -> list[QualityReport]:
     return list(db.scalars(select(QualityReport).order_by(QualityReport.id.desc()).limit(100)))
+
+
+def get_ops_summary(db: Session, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.utcnow()
+    since = now - timedelta(hours=24)
+    return {
+        "jobs_last_24h": db.scalar(select(func.count(CrawlJob.id)).where(CrawlJob.created_at >= since)) or 0,
+        "failed_jobs_last_24h": db.scalar(
+            select(func.count(CrawlJob.id)).where(
+                CrawlJob.created_at >= since,
+                CrawlJob.status == "failed",
+            )
+        )
+        or 0,
+        "pending_jobs": db.scalar(select(func.count(CrawlJob.id)).where(CrawlJob.status == "pending")) or 0,
+        "running_jobs": db.scalar(select(func.count(CrawlJob.id)).where(CrawlJob.status == "running")) or 0,
+        "quality_failed_reports": db.scalar(
+            select(func.count(QualityReport.id)).where(QualityReport.status == "failed")
+        )
+        or 0,
+        "review_pending_values": db.scalar(
+            select(func.count(StatValue.id)).where(StatValue.status == "ready_for_review")
+        )
+        or 0,
+        "last_success_at": db.scalar(
+            select(func.max(CrawlJob.finished_at)).where(CrawlJob.status == "success")
+        ),
+        "next_schedule_at": db.scalar(
+            select(func.min(CrawlSchedule.next_run_at)).where(
+                CrawlSchedule.enabled.is_(True),
+                CrawlSchedule.next_run_at.is_not(None),
+            )
+        ),
+    }
 
 
 def list_publish_batches(db: Session) -> list[PublishBatch]:

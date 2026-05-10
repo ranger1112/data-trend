@@ -138,6 +138,13 @@ input[type="checkbox"] {
   margin-bottom: 18px;
 }
 
+.opsStrip {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
 .grid {
   display: grid;
   gap: 18px;
@@ -173,6 +180,51 @@ input[type="checkbox"] {
   display: block;
   font-size: 28px;
   margin-top: 6px;
+}
+
+.opsCard {
+  background: white;
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  min-height: 98px;
+  padding: 14px;
+}
+
+.opsCard.warning {
+  border-color: #f4c466;
+}
+
+.opsCard.danger {
+  border-color: #f08b8b;
+}
+
+.opsIcon {
+  color: #62748e;
+  height: 18px;
+  margin-bottom: 8px;
+}
+
+.opsCard.warning .opsIcon {
+  color: #9a6500;
+}
+
+.opsCard.danger .opsIcon {
+  color: #b42318;
+}
+
+.opsCard span,
+.opsCard small {
+  color: #62748e;
+  display: block;
+  font-size: 12px;
+}
+
+.opsCard strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1.25;
+  margin: 4px 0;
+  overflow-wrap: anywhere;
 }
 
 .panel {
@@ -261,6 +313,7 @@ td {
   }
 
   .metrics,
+  .opsStrip,
   .grid,
   .inlineFields {
     grid-template-columns: 1fr;

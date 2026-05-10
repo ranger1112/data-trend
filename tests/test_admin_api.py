@@ -162,6 +162,12 @@ def test_admin_stat_value_publish_flow(tmp_path):
     assert batches_response.status_code == 200
     assert batches_response.json()[0]["action"] == "publish"
 
+    ops_response = client.get("/admin/ops/summary")
+    assert ops_response.status_code == 200
+    ops_body = ops_response.json()
+    assert ops_body["review_pending_values"] == 0
+    assert "failed_jobs_last_24h" in ops_body
+
     mini_response = client.get(
         "/mini/stat-values/latest?indicator_code=housing_price_mom&house_type=new_house"
     )
@@ -178,6 +184,46 @@ def test_admin_stat_value_publish_flow(tmp_path):
     )
     assert empty_mini_response.status_code == 200
     assert empty_mini_response.json() == []
+
+    app.dependency_overrides.clear()
+
+
+def test_ops_summary_reports_failures_and_schedule_health(tmp_path):
+    client, session_factory = make_client(tmp_path)
+
+    with session_factory() as db:
+        from packages.storage import repositories as repo
+
+        repo.create_schedule(
+            db,
+            name="每日房价抓取",
+            target_url="https://example.test/list.html",
+            interval_minutes=60,
+            next_run_at=__import__("datetime").datetime(2026, 1, 1, 0, 0),
+        )
+        failed_job = repo.create_crawl_job(db, target_url="https://example.test/list.html")
+        repo.mark_job_finished(
+            db,
+            failed_job,
+            status="failed",
+            error_type="network_error",
+            error_message="timeout",
+        )
+
+    summary_response = client.get("/admin/ops/summary")
+    assert summary_response.status_code == 200
+    summary = summary_response.json()
+    assert summary["jobs_last_24h"] == 1
+    assert summary["failed_jobs_last_24h"] == 1
+    assert summary["next_schedule_at"] == "2026-01-01T00:00:00"
+
+    failures_response = client.get("/admin/ops/recent-failures")
+    assert failures_response.status_code == 200
+    assert failures_response.json()[0]["error_type"] == "network_error"
+
+    alert_response = client.post("/admin/ops/test-alert")
+    assert alert_response.status_code == 200
+    assert alert_response.json()["configured"] is False
 
     app.dependency_overrides.clear()
 

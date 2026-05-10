@@ -22,9 +22,21 @@ def upgrade_sqlite_schema(engine) -> None:
         statements.append("ALTER TABLE crawl_jobs ADD COLUMN schedule_id INTEGER")
     if "retry_count" not in columns:
         statements.append("ALTER TABLE crawl_jobs ADD COLUMN retry_count INTEGER DEFAULT 0")
+    if "created_at" not in columns:
+        statements.append("ALTER TABLE crawl_jobs ADD COLUMN created_at DATETIME")
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+        if "created_at" not in columns:
+            connection.execute(
+                text(
+                    """
+                    UPDATE crawl_jobs
+                    SET created_at = COALESCE(started_at, finished_at, CURRENT_TIMESTAMP)
+                    WHERE created_at IS NULL
+                    """
+                )
+            )
 
 
 if __name__ == "__main__":

@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session
 
 from apps.api.dependencies import SessionLocal
 from apps.api.dependencies import get_db
+from apps.api.config import get_settings
 from apps.api.schemas import (
+    AlertTestOut,
     CrawlJobCreate,
     CrawlJobOut,
     DataSourceCreate,
     DataSourceOut,
+    OpsSummaryOut,
     DataSourcePatch,
     PublishBatchOut,
     QualityReportOut,
@@ -275,6 +278,25 @@ def list_quality_reports(db: Session = Depends(get_db)):
 @router.get("/stat-value-changes", response_model=list[StatValueChangeOut])
 def list_stat_value_changes(stat_value_id: int | None = None, db: Session = Depends(get_db)):
     return repo.list_stat_value_changes(db, stat_value_id=stat_value_id)
+
+
+@router.get("/ops/summary", response_model=OpsSummaryOut)
+def get_ops_summary(db: Session = Depends(get_db)):
+    return repo.get_ops_summary(db)
+
+
+@router.get("/ops/recent-failures", response_model=list[CrawlJobOut])
+def get_recent_failures(db: Session = Depends(get_db)):
+    return repo.get_recent_failed_jobs(db)
+
+
+@router.post("/ops/test-alert", response_model=AlertTestOut)
+def test_alert():
+    configured = get_settings().alert_webhook_url is not None
+    return {
+        "configured": configured,
+        "message": "alert webhook configured" if configured else "alert webhook is not configured",
+    }
 
 
 def run_crawl_job(job_id: int, url: str, data_source_id: int | None) -> None:

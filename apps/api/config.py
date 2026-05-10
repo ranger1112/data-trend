@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     app_name: str = "data-trend"
     database_url: str = "sqlite:///./data-trend.db"
     cors_origins: list[str] = ["*"]
+    worker_poll_seconds: int = 60
+    alert_webhook_url: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="DATA_TREND_", env_file=".env")
 
@@ -14,4 +16,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

@@ -144,6 +144,22 @@ class StatValueChangeOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OpsSummaryOut(BaseModel):
+    jobs_last_24h: int
+    failed_jobs_last_24h: int
+    pending_jobs: int
+    running_jobs: int
+    quality_failed_reports: int
+    review_pending_values: int
+    last_success_at: datetime | None
+    next_schedule_at: datetime | None
+
+
+class AlertTestOut(BaseModel):
+    configured: bool
+    message: str
+
+
 class TrendPoint(BaseModel):
     period: date
     value: float

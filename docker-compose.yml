@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: data_trend
+      POSTGRES_USER: data_trend
+      POSTGRES_PASSWORD: data_trend
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U data_trend -d data_trend"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data-trend
+
+  api:
+    build: .
+    environment:
+      DATA_TREND_DATABASE_URL: postgresql+psycopg://data_trend:data_trend@db:5432/data_trend
+      DATA_TREND_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data-trend
+    command: sh -c "alembic upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    environment:
+      DATA_TREND_DATABASE_URL: postgresql+psycopg://data_trend:data_trend@db:5432/data_trend
+      DATA_TREND_WORKER_POLL_SECONDS: "60"
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - data-trend
+    command: python -m apps.worker.run_housing_price_import --loop
+
+networks:
+  data-trend:
+    driver: bridge
+
+volumes:
+  postgres-data:

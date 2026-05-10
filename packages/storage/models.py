@@ -11,8 +11,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    JSON,
 )
-from sqlalchemy.dialects.sqlite import JSON
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -48,6 +48,7 @@ class CrawlJob(Base):
     skipped_records: Mapped[int] = mapped_column(Integer, default=0)
     error_type: Mapped[str | None] = mapped_column(String(40))
     error_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
 
