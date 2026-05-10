@@ -9,9 +9,13 @@ from packages.domain.constants import INDICATORS
 from packages.storage.models import (
     CrawlJob,
     CrawlRecord,
+    CrawlSchedule,
     DataSource,
     Indicator,
+    PublishBatch,
+    QualityReport,
     Region,
+    StatValueChange,
     StatValue,
 )
 
@@ -86,9 +90,16 @@ def update_data_source(
 def create_crawl_job(
     db: Session,
     data_source_id: int | None = None,
+    schedule_id: int | None = None,
     target_url: str | None = None,
+    trigger: str = "manual",
 ) -> CrawlJob:
-    job = CrawlJob(data_source_id=data_source_id, target_url=target_url)
+    job = CrawlJob(
+        data_source_id=data_source_id,
+        schedule_id=schedule_id,
+        target_url=target_url,
+        trigger=trigger,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -153,6 +164,108 @@ def list_crawl_jobs(
         statement = statement.where(CrawlJob.data_source_id == data_source_id)
     statement = statement.order_by(CrawlJob.id.desc()).limit(100)
     return list(db.scalars(statement))
+
+
+def create_schedule(
+    db: Session,
+    name: str,
+    target_url: str,
+    interval_minutes: int,
+    data_source_id: int | None = None,
+    enabled: bool = True,
+    next_run_at: datetime | None = None,
+) -> CrawlSchedule:
+    schedule = CrawlSchedule(
+        name=name,
+        target_url=target_url,
+        data_source_id=data_source_id,
+        interval_minutes=interval_minutes,
+        enabled=enabled,
+        next_run_at=next_run_at or datetime.utcnow(),
+    )
+    db.add(schedule)
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+
+def list_schedules(db: Session) -> list[CrawlSchedule]:
+    return list(db.scalars(select(CrawlSchedule).order_by(CrawlSchedule.id.desc())))
+
+
+def get_schedule(db: Session, schedule_id: int) -> CrawlSchedule | None:
+    return db.get(CrawlSchedule, schedule_id)
+
+
+def update_schedule(
+    db: Session,
+    schedule: CrawlSchedule,
+    name: str | None = None,
+    target_url: str | None = None,
+    interval_minutes: int | None = None,
+    enabled: bool | None = None,
+    next_run_at: datetime | None = None,
+) -> CrawlSchedule:
+    if name is not None:
+        schedule.name = name
+    if target_url is not None:
+        schedule.target_url = target_url
+    if interval_minutes is not None:
+        schedule.interval_minutes = interval_minutes
+    if enabled is not None:
+        schedule.enabled = enabled
+    if next_run_at is not None:
+        schedule.next_run_at = next_run_at
+    schedule.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+
+def list_due_schedules(db: Session, now: datetime) -> list[CrawlSchedule]:
+    return list(
+        db.scalars(
+            select(CrawlSchedule).where(
+                CrawlSchedule.enabled.is_(True),
+                CrawlSchedule.next_run_at <= now,
+            )
+        )
+    )
+
+
+def mark_schedule_run(db: Session, schedule: CrawlSchedule, next_run_at: datetime, now: datetime) -> CrawlSchedule:
+    schedule.last_run_at = now
+    schedule.next_run_at = next_run_at
+    schedule.updated_at = now
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+
+def retry_crawl_job(db: Session, job: CrawlJob) -> CrawlJob:
+    retry = CrawlJob(
+        data_source_id=job.data_source_id,
+        schedule_id=job.schedule_id,
+        target_url=job.target_url,
+        trigger="retry",
+        retry_count=job.retry_count + 1,
+    )
+    db.add(retry)
+    db.commit()
+    db.refresh(retry)
+    return retry
+
+
+def cancel_crawl_job(db: Session, job: CrawlJob) -> CrawlJob:
+    if job.status not in {"pending", "running"}:
+        return job
+    job.status = "cancelled"
+    job.finished_at = datetime.utcnow()
+    job.error_type = "cancelled"
+    job.error_message = "cancelled by operator"
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 def upsert_crawl_record(
@@ -268,7 +381,11 @@ def update_stat_value(
     value: float | None,
     status: str | None,
     dimensions: dict[str, Any] | None,
+    actor: str = "system",
+    reason: str | None = None,
 ) -> StatValue:
+    before_value = stat_value.value
+    before_status = stat_value.status
     if value is not None:
         stat_value.value = value
     if status is not None:
@@ -276,6 +393,18 @@ def update_stat_value(
     if dimensions is not None:
         stat_value.dimensions = dimensions
     stat_value.updated_at = datetime.utcnow()
+    if before_value != stat_value.value or before_status != stat_value.status:
+        db.add(
+            StatValueChange(
+                stat_value_id=stat_value.id,
+                actor=actor,
+                before_value=before_value,
+                after_value=stat_value.value,
+                before_status=before_status,
+                after_status=stat_value.status,
+                reason=reason,
+            )
+        )
     db.commit()
     db.refresh(stat_value)
     return stat_value
@@ -287,6 +416,8 @@ def list_stat_values(
     region_id: int | None = None,
     indicator_code: str | None = None,
     period: date | None = None,
+    house_type: str | None = None,
+    area_type: str | None = None,
 ) -> list[StatValue]:
     statement = select(StatValue).join(StatValue.region).join(StatValue.indicator)
     if status:
@@ -298,7 +429,13 @@ def list_stat_values(
     if period:
         statement = statement.where(StatValue.period == period)
     statement = statement.order_by(StatValue.period.desc(), Region.name, Indicator.code).limit(200)
-    return list(db.scalars(statement))
+    values = list(db.scalars(statement))
+    return [
+        value
+        for value in values
+        if (not house_type or value.dimensions.get("house_type") == house_type)
+        and (not area_type or value.dimensions.get("area_type") == area_type)
+    ]
 
 
 def serialize_stat_value(value: StatValue) -> dict[str, Any]:
@@ -319,21 +456,75 @@ def serialize_stat_value(value: StatValue) -> dict[str, Any]:
 
 
 def publish_stat_values(db: Session, ids: list[int]) -> int:
-    values = list(db.scalars(select(StatValue).where(StatValue.id.in_(ids))))
+    values = list(
+        db.scalars(
+            select(StatValue).where(
+                StatValue.id.in_(ids),
+                StatValue.status == "ready_for_review",
+            )
+        )
+    )
+    batch = PublishBatch(action="publish", actor="admin", item_count=len(values))
+    db.add(batch)
     for value in values:
+        before_status = value.status
         value.status = "published"
         value.updated_at = datetime.utcnow()
+        db.add(
+            StatValueChange(
+                stat_value_id=value.id,
+                actor="admin",
+                before_value=value.value,
+                after_value=value.value,
+                before_status=before_status,
+                after_status=value.status,
+            )
+        )
     db.commit()
     return len(values)
 
 
 def publish_draft_values(db: Session) -> int:
-    values = list(db.scalars(select(StatValue).where(StatValue.status == "draft")))
+    values = list(db.scalars(select(StatValue.id).where(StatValue.status == "ready_for_review")))
+    return publish_stat_values(db, values)
+
+
+def reject_stat_values(db: Session, ids: list[int], reason: str | None = None) -> int:
+    values = list(db.scalars(select(StatValue).where(StatValue.id.in_(ids))))
+    batch = PublishBatch(action="reject", actor="admin", item_count=len(values), reason=reason)
+    db.add(batch)
     for value in values:
-        value.status = "published"
+        before_status = value.status
+        value.status = "rejected"
         value.updated_at = datetime.utcnow()
+        db.add(
+            StatValueChange(
+                stat_value_id=value.id,
+                actor="admin",
+                before_value=value.value,
+                after_value=value.value,
+                before_status=before_status,
+                after_status=value.status,
+                reason=reason,
+            )
+        )
     db.commit()
     return len(values)
+
+
+def list_quality_reports(db: Session) -> list[QualityReport]:
+    return list(db.scalars(select(QualityReport).order_by(QualityReport.id.desc()).limit(100)))
+
+
+def list_publish_batches(db: Session) -> list[PublishBatch]:
+    return list(db.scalars(select(PublishBatch).order_by(PublishBatch.id.desc()).limit(100)))
+
+
+def list_stat_value_changes(db: Session, stat_value_id: int | None = None) -> list[StatValueChange]:
+    statement = select(StatValueChange)
+    if stat_value_id:
+        statement = statement.where(StatValueChange.stat_value_id == stat_value_id)
+    return list(db.scalars(statement.order_by(StatValueChange.id.desc()).limit(100)))
 
 
 def get_published_trend(
@@ -400,6 +591,27 @@ def get_latest_published_values(
         if (not house_type or value.dimensions.get("house_type") == house_type)
         and (not area_type or value.dimensions.get("area_type") == area_type)
     ]
+
+
+def get_published_rankings(
+    db: Session,
+    indicator_code: str,
+    house_type: str | None = None,
+    area_type: str | None = None,
+    limit: int = 10,
+) -> dict[str, list[dict[str, Any]]]:
+    ranking_area_type = area_type if area_type is not None else "none"
+    values = get_latest_published_values(
+        db,
+        indicator_code=indicator_code,
+        house_type=house_type,
+        area_type=ranking_area_type,
+    )
+    sorted_values = sorted(values, key=lambda item: item["value"], reverse=True)
+    return {
+        "top": sorted_values[:limit],
+        "bottom": list(reversed(sorted_values[-limit:])),
+    }
 
 
 def get_dashboard_overview(db: Session) -> dict[str, Any]:

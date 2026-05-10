@@ -68,6 +68,38 @@ def test_admin_data_source_update_and_job_creation(tmp_path):
     app.dependency_overrides.clear()
 
 
+def test_schedule_creates_due_jobs_and_supports_cancel(tmp_path):
+    client, _ = make_client(tmp_path)
+
+    schedule_response = client.post(
+        "/admin/schedules",
+        json={
+            "name": "每日房价抓取",
+            "target_url": "https://example.test/list.html",
+            "interval_minutes": 60,
+            "enabled": True,
+            "next_run_at": "2025-01-01T00:00:00",
+        },
+    )
+    assert schedule_response.status_code == 200
+
+    due_response = client.post("/admin/schedules/run-due")
+    assert due_response.status_code == 200
+    jobs = due_response.json()
+    assert len(jobs) == 1
+    assert jobs[0]["trigger"] == "schedule"
+
+    duplicate_due_response = client.post("/admin/schedules/run-due")
+    assert duplicate_due_response.status_code == 200
+    assert duplicate_due_response.json() == []
+
+    cancel_response = client.post(f"/admin/crawl-jobs/{jobs[0]['id']}/cancel")
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
+
+    app.dependency_overrides.clear()
+
+
 def test_admin_stat_value_publish_flow(tmp_path):
     client, session_factory = make_client(tmp_path)
 
@@ -99,9 +131,11 @@ def test_admin_stat_value_publish_flow(tmp_path):
             published_at=__import__("datetime").datetime(2025, 11, 1, 9, 30),
         )
         db.commit()
+        value.status = "ready_for_review"
+        db.commit()
         value_id = value.id
 
-    list_response = client.get("/admin/stat-values?status=draft&indicator_code=housing_price_mom")
+    list_response = client.get("/admin/review-items?indicator_code=housing_price_mom")
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == value_id
 
@@ -109,9 +143,24 @@ def test_admin_stat_value_publish_flow(tmp_path):
     assert record_response.status_code == 200
     assert record_response.json()[0]["title"].startswith("2025年10月份")
 
-    publish_response = client.post("/admin/stat-values/publish", json={"ids": [value_id]})
+    patch_response = client.patch(
+        f"/admin/stat-values/{value_id}",
+        json={"value": 100.3, "reason": "人工复核"},
+    )
+    assert patch_response.status_code == 200
+    assert patch_response.json()["value"] == 100.3
+
+    changes_response = client.get(f"/admin/stat-value-changes?stat_value_id={value_id}")
+    assert changes_response.status_code == 200
+    assert changes_response.json()[0]["reason"] == "人工复核"
+
+    publish_response = client.post("/admin/review-batches/publish", json={"ids": [value_id]})
     assert publish_response.status_code == 200
     assert publish_response.json()["published"] == 1
+
+    batches_response = client.get("/admin/publish-batches")
+    assert batches_response.status_code == 200
+    assert batches_response.json()[0]["action"] == "publish"
 
     mini_response = client.get(
         "/mini/stat-values/latest?indicator_code=housing_price_mom&house_type=new_house"
@@ -129,5 +178,74 @@ def test_admin_stat_value_publish_flow(tmp_path):
     )
     assert empty_mini_response.status_code == 200
     assert empty_mini_response.json() == []
+
+    app.dependency_overrides.clear()
+
+
+def test_quality_failed_values_are_not_published_and_rankings_use_published_only(tmp_path):
+    client, session_factory = make_client(tmp_path)
+
+    with session_factory() as db:
+        from packages.storage import repositories as repo
+
+        region = repo.get_or_create_region(db, "北京", "city")
+        indicator = repo.get_or_create_indicator(db, "housing_price_mom")
+        value = repo.upsert_stat_value(
+            db,
+            region_id=region.id,
+            indicator_id=indicator.id,
+            period=__import__("datetime").date(2025, 10, 1),
+            value=100.2,
+            source_id=None,
+            dimensions={"house_type": "new_house", "area_type": "none"},
+        )
+        value.status = "quality_failed"
+        db.commit()
+        value_id = value.id
+
+    publish_response = client.post("/admin/review-batches/publish", json={"ids": [value_id]})
+    assert publish_response.status_code == 200
+    assert publish_response.json()["published"] == 0
+
+    ranking_response = client.get("/mini/rankings?indicator_code=housing_price_mom")
+    assert ranking_response.status_code == 200
+    assert ranking_response.json() == {"top": [], "bottom": []}
+
+    app.dependency_overrides.clear()
+
+
+def test_rankings_default_to_city_level_area(tmp_path):
+    client, session_factory = make_client(tmp_path)
+
+    with session_factory() as db:
+        from packages.storage import repositories as repo
+
+        indicator = repo.get_or_create_indicator(db, "housing_price_mom")
+        beijing = repo.get_or_create_region(db, "北京", "city")
+        shanghai = repo.get_or_create_region(db, "上海", "city")
+        for region, none_value, classified_value in [
+            (beijing, 101.2, 109.9),
+            (shanghai, 99.8, 110.0),
+        ]:
+            for area_type, value in [("none", none_value), ("under_90", classified_value)]:
+                stat_value = repo.upsert_stat_value(
+                    db,
+                    region_id=region.id,
+                    indicator_id=indicator.id,
+                    period=__import__("datetime").date(2025, 10, 1),
+                    value=value,
+                    source_id=None,
+                    dimensions={"house_type": "new_house", "area_type": area_type},
+                )
+                stat_value.status = "published"
+        db.commit()
+
+    ranking_response = client.get(
+        "/mini/rankings?indicator_code=housing_price_mom&house_type=new_house"
+    )
+    assert ranking_response.status_code == 200
+    body = ranking_response.json()
+    assert [item["region"] for item in body["top"]] == ["北京", "上海"]
+    assert [item["value"] for item in body["top"]] == [101.2, 99.8]
 
     app.dependency_overrides.clear()

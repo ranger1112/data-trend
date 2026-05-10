@@ -11,10 +11,17 @@ from apps.api.schemas import (
     DataSourceCreate,
     DataSourceOut,
     DataSourcePatch,
+    PublishBatchOut,
+    QualityReportOut,
+    ScheduleCreate,
+    ScheduleOut,
+    SchedulePatch,
+    StatValueChangeOut,
     StatValuePatch,
     StatValuePublishRequest,
 )
 from packages.crawler.housing_price.importer import HousingPriceImportRunner
+from packages.pipeline.scheduler import create_due_jobs
 from packages.storage import repositories as repo
 
 router = APIRouter()
@@ -89,11 +96,72 @@ def create_crawl_job(
 
 @router.get("/crawl-jobs", response_model=list[CrawlJobOut])
 def list_crawl_jobs(
-    status: str | None = Query(default=None, pattern="^(pending|running|success|failed)$"),
+    status: str | None = Query(default=None, pattern="^(pending|running|success|failed|cancelled)$"),
     data_source_id: int | None = None,
     db: Session = Depends(get_db),
 ):
     return repo.list_crawl_jobs(db, status=status, data_source_id=data_source_id)
+
+
+@router.post("/crawl-jobs/{job_id}/retry", response_model=CrawlJobOut)
+def retry_crawl_job(job_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    job = db.get(repo.CrawlJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="crawl job not found")
+    if not job.target_url:
+        raise HTTPException(status_code=422, detail="crawl job target url is missing")
+    retry = repo.retry_crawl_job(db, job)
+    background_tasks.add_task(run_crawl_job, retry.id, retry.target_url, retry.data_source_id)
+    return retry
+
+
+@router.post("/crawl-jobs/{job_id}/cancel", response_model=CrawlJobOut)
+def cancel_crawl_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.get(repo.CrawlJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="crawl job not found")
+    return repo.cancel_crawl_job(db, job)
+
+
+@router.post("/schedules", response_model=ScheduleOut)
+def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)):
+    if payload.data_source_id and not repo.get_data_source(db, payload.data_source_id):
+        raise HTTPException(status_code=404, detail="data source not found")
+    return repo.create_schedule(
+        db,
+        name=payload.name,
+        target_url=str(payload.target_url),
+        data_source_id=payload.data_source_id,
+        interval_minutes=payload.interval_minutes,
+        enabled=payload.enabled,
+        next_run_at=payload.next_run_at,
+    )
+
+
+@router.get("/schedules", response_model=list[ScheduleOut])
+def list_schedules(db: Session = Depends(get_db)):
+    return repo.list_schedules(db)
+
+
+@router.patch("/schedules/{schedule_id}", response_model=ScheduleOut)
+def patch_schedule(schedule_id: int, payload: SchedulePatch, db: Session = Depends(get_db)):
+    schedule = repo.get_schedule(db, schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return repo.update_schedule(
+        db,
+        schedule,
+        name=payload.name,
+        target_url=str(payload.target_url) if payload.target_url else None,
+        interval_minutes=payload.interval_minutes,
+        enabled=payload.enabled,
+        next_run_at=payload.next_run_at,
+    )
+
+
+@router.post("/schedules/run-due", response_model=list[CrawlJobOut])
+def run_due_schedules(db: Session = Depends(get_db)):
+    return create_due_jobs(db)
 
 
 @router.get("/crawl-records")
@@ -115,10 +183,12 @@ def list_crawl_records(
 
 @router.get("/stat-values")
 def list_stat_values(
-    status: str | None = Query(default=None, pattern="^(draft|published|rejected)$"),
+    status: str | None = Query(default=None, pattern="^(draft|quality_failed|ready_for_review|published|rejected)$"),
     region_id: int | None = None,
     indicator_code: str | None = None,
     period: date | None = None,
+    house_type: str | None = None,
+    area_type: str | None = None,
     db: Session = Depends(get_db),
 ):
     values = repo.list_stat_values(
@@ -127,6 +197,29 @@ def list_stat_values(
         region_id=region_id,
         indicator_code=indicator_code,
         period=period,
+        house_type=house_type,
+        area_type=area_type,
+    )
+    return [repo.serialize_stat_value(value) for value in values]
+
+
+@router.get("/review-items")
+def list_review_items(
+    region_id: int | None = None,
+    indicator_code: str | None = None,
+    period: date | None = None,
+    house_type: str | None = None,
+    area_type: str | None = None,
+    db: Session = Depends(get_db),
+):
+    values = repo.list_stat_values(
+        db,
+        status="ready_for_review",
+        region_id=region_id,
+        indicator_code=indicator_code,
+        period=period,
+        house_type=house_type,
+        area_type=area_type,
     )
     return [repo.serialize_stat_value(value) for value in values]
 
@@ -142,6 +235,8 @@ def patch_stat_value(stat_value_id: int, payload: StatValuePatch, db: Session = 
         value=payload.value,
         status=payload.status,
         dimensions=payload.dimensions,
+        actor="admin",
+        reason=payload.reason,
     )
 
 
@@ -155,6 +250,31 @@ def publish_stat_values(payload: StatValuePublishRequest, db: Session = Depends(
 def publish_batch(db: Session = Depends(get_db)):
     count = repo.publish_draft_values(db)
     return {"published": count}
+
+
+@router.get("/publish-batches", response_model=list[PublishBatchOut])
+def list_publish_batches(db: Session = Depends(get_db)):
+    return repo.list_publish_batches(db)
+
+
+@router.post("/review-batches/publish")
+def publish_review_batch(payload: StatValuePublishRequest, db: Session = Depends(get_db)):
+    return {"published": repo.publish_stat_values(db, payload.ids)}
+
+
+@router.post("/review-batches/reject")
+def reject_review_batch(payload: StatValuePublishRequest, db: Session = Depends(get_db)):
+    return {"rejected": repo.reject_stat_values(db, payload.ids, reason=payload.reason)}
+
+
+@router.get("/quality-reports", response_model=list[QualityReportOut])
+def list_quality_reports(db: Session = Depends(get_db)):
+    return repo.list_quality_reports(db)
+
+
+@router.get("/stat-value-changes", response_model=list[StatValueChangeOut])
+def list_stat_value_changes(stat_value_id: int | None = None, db: Session = Depends(get_db)):
+    return repo.list_stat_value_changes(db, stat_value_id=stat_value_id)
 
 
 def run_crawl_job(job_id: int, url: str, data_source_id: int | None) -> None:

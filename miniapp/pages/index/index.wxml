@@ -23,7 +23,8 @@
   </view>
 
   <view class="toolbar">
-    <picker mode="selector" range="{{regions}}" range-key="name" bindchange="onRegionChange">
+    <input class="search" value="{{cityKeyword}}" bindinput="onCitySearch" placeholder="搜索城市" />
+    <picker mode="selector" range="{{filteredRegions}}" range-key="name" bindchange="onRegionChange">
       <view class="select">{{currentRegion.name || '选择城市'}}</view>
     </picker>
     <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
@@ -35,6 +36,14 @@
     <picker mode="selector" range="{{areaTypes}}" range-key="label" bindchange="onAreaTypeChange">
       <view class="select">{{currentAreaType.label}}</view>
     </picker>
+    <button class="favoriteBtn" bindtap="toggleFavoriteCity">收藏城市</button>
+  </view>
+
+  <view wx:if="{{favoriteCities.length > 0}}" class="panel">
+    <text class="panelTitle">常看城市</text>
+    <view class="chips">
+      <text wx:for="{{favoriteCities}}" wx:key="id" class="chip">{{item.name}}</text>
+    </view>
   </view>
 
   <view class="panel">
@@ -52,14 +61,35 @@
   </view>
 
   <view class="panel">
-    <text class="panelTitle">趋势明细（时间正序）</text>
+    <text class="panelTitle">趋势图（时间正序）</text>
     <block wx:for="{{trend}}" wx:key="period">
       <view class="row">
         <text>{{item.period}}</text>
+        <view class="barTrack">
+          <view class="bar" style="width: {{item.value > 105 ? 100 : item.value - 80}}%;"></view>
+        </view>
         <text class="value">{{item.value}}</text>
       </view>
     </block>
     <view wx:if="{{trend.length === 0 && !loading}}" class="empty">暂无趋势数据</view>
     <view wx:if="{{loading}}" class="empty">加载中...</view>
+  </view>
+
+  <view class="panel">
+    <text class="panelTitle">涨跌榜</text>
+    <text class="sectionLabel">涨幅靠前</text>
+    <block wx:for="{{rankings.top}}" wx:key="region">
+      <view class="row">
+        <text class="primary">{{item.region}}</text>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
+    <text class="sectionLabel">跌幅靠前</text>
+    <block wx:for="{{rankings.bottom}}" wx:key="region">
+      <view class="row">
+        <text class="primary">{{item.region}}</text>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
   </view>
 </view>

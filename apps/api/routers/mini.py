@@ -51,6 +51,23 @@ def latest_values(
     )
 
 
+@router.get("/rankings")
+def rankings(
+    indicator_code: str = Query(default="housing_price_mom"),
+    house_type: str | None = None,
+    area_type: str | None = None,
+    limit: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    return repo.get_published_rankings(
+        db,
+        indicator_code=indicator_code,
+        house_type=house_type,
+        area_type=area_type,
+        limit=limit,
+    )
+
+
 @router.get("/dashboard/overview")
 def dashboard_overview(db: Session = Depends(get_db)):
     return repo.get_dashboard_overview(db)

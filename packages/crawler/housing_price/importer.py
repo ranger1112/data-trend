@@ -7,6 +7,7 @@ from packages.crawler.housing_price.dto import GovStatsArticle, HousingPriceReco
 from packages.crawler.housing_price.list_crawler import GovStatsListParser
 from packages.crawler.housing_price.parser import HousingPriceHtmlParser
 from packages.crawler.http import HtmlFetcher
+from packages.pipeline.quality import QualityChecker
 from packages.storage import repositories as repo
 from packages.storage.models import CrawlJob, DataSource
 
@@ -111,6 +112,7 @@ class HousingPriceImportRunner:
                 error_type=error_type,
                 error_message=error_message,
             )
+            QualityChecker().check_job(self.db, job)
         except Exception as exc:
             self.db.rollback()
             repo.mark_job_finished(

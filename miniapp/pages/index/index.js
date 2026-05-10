@@ -9,6 +9,10 @@ Page({
     overview: {},
     latestValues: [],
     trend: [],
+    rankings: { top: [], bottom: [] },
+    cityKeyword: "",
+    filteredRegions: [],
+    favoriteCities: [],
     houseTypes: [
       { label: "全部住宅", value: "" },
       { label: "新建商品住宅", value: "new_house" },
@@ -36,14 +40,19 @@ Page({
       this.request("/mini/dashboard/overview"),
       this.request("/mini/regions"),
       this.request("/mini/indicators"),
-      this.loadLatestValues()
+      this.loadLatestValues(),
+      this.loadRankings()
     ])
-      .then(([overview, regions, indicators, latestValues]) => {
+      .then(([overview, regions, indicators, latestValues, rankings]) => {
+        const favoriteCities = wx.getStorageSync("favoriteCities") || [];
         this.setData({
           overview,
           regions,
+          filteredRegions: regions,
           indicators,
           latestValues,
+          rankings,
+          favoriteCities,
           currentRegion: regions[0] || {},
           currentIndicator: indicators[0] || {}
         });
@@ -65,6 +74,14 @@ Page({
     return this.request(`/mini/stat-values/latest?${params.join("&")}`);
   },
 
+  loadRankings() {
+    const { currentIndicator, currentHouseType, currentAreaType } = this.data;
+    const params = [`indicator_code=${currentIndicator.code || "housing_price_mom"}`];
+    if (currentHouseType.value) params.push(`house_type=${currentHouseType.value}`);
+    if (currentAreaType.value) params.push(`area_type=${currentAreaType.value}`);
+    return this.request(`/mini/rankings?${params.join("&")}`);
+  },
+
   loadTrend() {
     const { currentRegion, currentIndicator, currentHouseType, currentAreaType } = this.data;
     if (!currentRegion.id || !currentIndicator.code) {
@@ -84,7 +101,7 @@ Page({
   },
 
   onRegionChange(event) {
-    this.setData({ currentRegion: this.data.regions[event.detail.value], loading: true });
+    this.setData({ currentRegion: this.data.filteredRegions[event.detail.value], loading: true });
     this.loadTrend()
       .catch(() => this.setData({ error: "趋势数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
@@ -97,6 +114,9 @@ Page({
       this.loadTrend(),
       this.loadLatestValues().then((latestValues) => {
         this.setData({ latestValues });
+      }),
+      this.loadRankings().then((rankings) => {
+        this.setData({ rankings });
       })
     ])
       .catch(() => this.setData({ error: "指标数据加载失败" }))
@@ -118,10 +138,35 @@ Page({
       this.loadTrend(),
       this.loadLatestValues().then((latestValues) => {
         this.setData({ latestValues });
+      }),
+      this.loadRankings().then((rankings) => {
+        this.setData({ rankings });
       })
     ])
       .catch(() => this.setData({ error: "筛选数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
+  },
+
+  onCitySearch(event) {
+    const cityKeyword = event.detail.value;
+    const filteredRegions = this.data.regions.filter((region) => region.name.indexOf(cityKeyword) >= 0);
+    this.setData({
+      cityKeyword,
+      filteredRegions,
+      currentRegion: filteredRegions[0] || {}
+    });
+    this.loadTrend().catch(() => this.setData({ error: "趋势数据加载失败" }));
+  },
+
+  toggleFavoriteCity() {
+    const currentRegion = this.data.currentRegion;
+    if (!currentRegion.id) return;
+    const exists = this.data.favoriteCities.some((city) => city.id === currentRegion.id);
+    const favoriteCities = exists
+      ? this.data.favoriteCities.filter((city) => city.id !== currentRegion.id)
+      : [currentRegion, ...this.data.favoriteCities].slice(0, 8);
+    wx.setStorageSync("favoriteCities", favoriteCities);
+    this.setData({ favoriteCities });
   },
 
   request(path) {

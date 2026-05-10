@@ -77,12 +77,35 @@
   margin-bottom: 20rpx;
 }
 
-.select {
+.select,
+.search,
+.favoriteBtn {
   color: #1f2937;
   font-size: 28rpx;
   min-height: 84rpx;
   line-height: 84rpx;
   padding: 0 24rpx;
+}
+
+.favoriteBtn {
+  background: #145db8;
+  border: 0;
+  border-radius: 12rpx;
+  color: #ffffff;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.chip {
+  background: #edf5ff;
+  border-radius: 999rpx;
+  color: #145db8;
+  font-size: 24rpx;
+  padding: 10rpx 18rpx;
 }
 
 .panel {
@@ -121,6 +144,30 @@
   color: #145db8;
   font-size: 30rpx;
   font-weight: 800;
+}
+
+.barTrack {
+  background: #e5ebf2;
+  border-radius: 999rpx;
+  flex: 1;
+  height: 14rpx;
+  margin: 0 18rpx;
+  overflow: hidden;
+}
+
+.bar {
+  background: #21a67a;
+  border-radius: 999rpx;
+  height: 100%;
+  min-width: 4rpx;
+}
+
+.sectionLabel {
+  color: #607086;
+  display: block;
+  font-size: 24rpx;
+  font-weight: 700;
+  margin: 18rpx 0 8rpx;
 }
 
 .empty {

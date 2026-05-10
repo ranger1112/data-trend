@@ -5,6 +5,7 @@ import {
   Database,
   FileText,
   Filter,
+  ListChecks,
   Play,
   RadioTower,
   RefreshCcw,
@@ -45,8 +46,11 @@ type Indicator = {
 type CrawlJob = {
   id: number;
   data_source_id: number | null;
+  schedule_id: number | null;
   target_url: string | null;
   status: string;
+  trigger: string;
+  retry_count: number;
   total_records: number;
   imported_records: number;
   skipped_records: number;
@@ -76,6 +80,38 @@ type StatValue = {
   dimensions: Record<string, string>;
 };
 
+type Schedule = {
+  id: number;
+  name: string;
+  target_url: string;
+  data_source_id: number | null;
+  interval_minutes: number;
+  enabled: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
+};
+
+type QualityReport = {
+  id: number;
+  crawl_job_id: number | null;
+  period: string | null;
+  status: string;
+  actual_regions: number;
+  expected_regions: number;
+  checked_values: number;
+  errors: string[];
+  warnings: string[];
+  created_at: string;
+};
+
+type PublishBatch = {
+  id: number;
+  action: string;
+  item_count: number;
+  reason: string | null;
+  created_at: string;
+};
+
 type DataSourceForm = {
   name: string;
   entry_url: string;
@@ -90,6 +126,9 @@ function App() {
   const [regions, setRegions] = useState<Region[]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [jobs, setJobs] = useState<CrawlJob[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [qualityReports, setQualityReports] = useState<QualityReport[]>([]);
+  const [publishBatches, setPublishBatches] = useState<PublishBatch[]>([]);
   const [records, setRecords] = useState<CrawlRecord[]>([]);
   const [statValues, setStatValues] = useState<StatValue[]>([]);
   const [sourceForm, setSourceForm] = useState<DataSourceForm>({
@@ -101,7 +140,7 @@ function App() {
   });
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [adHocUrl, setAdHocUrl] = useState(DEFAULT_URL);
-  const [statStatus, setStatStatus] = useState("draft");
+  const [statStatus, setStatStatus] = useState("ready_for_review");
   const [jobStatus, setJobStatus] = useState("");
   const [recordKeyword, setRecordKeyword] = useState("");
   const [recordStatus, setRecordStatus] = useState("");
@@ -110,6 +149,12 @@ function App() {
   const [statRegionId, setStatRegionId] = useState("");
   const [statIndicatorCode, setStatIndicatorCode] = useState("");
   const [statPeriod, setStatPeriod] = useState("");
+  const [statHouseType, setStatHouseType] = useState("");
+  const [statAreaType, setStatAreaType] = useState("");
+  const [scheduleName, setScheduleName] = useState("每日房价抓取");
+  const [scheduleUrl, setScheduleUrl] = useState(DEFAULT_URL);
+  const [scheduleInterval, setScheduleInterval] = useState("1440");
+  const [rejectReason, setRejectReason] = useState("");
   const [selectedStatIds, setSelectedStatIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -129,7 +174,18 @@ function App() {
   }
 
   async function refresh() {
-    const [overviewRes, sourcesRes, regionsRes, indicatorsRes, jobsRes, recordsRes, statValuesRes] = await Promise.all([
+    const [
+      overviewRes,
+      sourcesRes,
+      regionsRes,
+      indicatorsRes,
+      jobsRes,
+      recordsRes,
+      statValuesRes,
+      schedulesRes,
+      reportsRes,
+      batchesRes,
+    ] = await Promise.all([
       request<Overview>("/mini/dashboard/overview"),
       request<DataSource[]>("/admin/data-sources"),
       request<Region[]>("/mini/regions"),
@@ -149,8 +205,13 @@ function App() {
           region_id: statRegionId,
           indicator_code: statIndicatorCode,
           period: statPeriod,
+          house_type: statHouseType,
+          area_type: statAreaType,
         })}`,
       ),
+      request<Schedule[]>("/admin/schedules"),
+      request<QualityReport[]>("/admin/quality-reports"),
+      request<PublishBatch[]>("/admin/publish-batches"),
     ]);
     setOverview(overviewRes);
     setDataSources(sourcesRes);
@@ -159,6 +220,9 @@ function App() {
     setJobs(jobsRes);
     setRecords(recordsRes);
     setStatValues(statValuesRes);
+    setSchedules(schedulesRes);
+    setQualityReports(reportsRes);
+    setPublishBatches(batchesRes);
     setSelectedStatIds((ids) => ids.filter((id) => statValuesRes.some((value) => value.id === id)));
   }
 
@@ -215,7 +279,7 @@ function App() {
     if (selectedStatIds.length === 0) return;
     setPublishing(true);
     try {
-      await request<{ published: number }>("/admin/stat-values/publish", {
+      await request<{ published: number }>("/admin/review-batches/publish", {
         method: "POST",
         body: JSON.stringify({ ids: selectedStatIds }),
       });
@@ -225,6 +289,58 @@ function App() {
     } finally {
       setPublishing(false);
     }
+  }
+
+  async function rejectSelected() {
+    if (selectedStatIds.length === 0) return;
+    await request<{ rejected: number }>("/admin/review-batches/reject", {
+      method: "POST",
+      body: JSON.stringify({ ids: selectedStatIds, reason: rejectReason || "人工驳回" }),
+    });
+    setMessage("已驳回选中数据");
+    setSelectedStatIds([]);
+    await refresh();
+  }
+
+  async function createSchedule(event: React.FormEvent) {
+    event.preventDefault();
+    await request<Schedule>("/admin/schedules", {
+      method: "POST",
+      body: JSON.stringify({
+        name: scheduleName,
+        target_url: scheduleUrl,
+        interval_minutes: Number(scheduleInterval),
+        enabled: true,
+      }),
+    });
+    setMessage("调度配置已创建");
+    await refresh();
+  }
+
+  async function toggleSchedule(schedule: Schedule) {
+    await request<Schedule>(`/admin/schedules/${schedule.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: !schedule.enabled }),
+    });
+    await refresh();
+  }
+
+  async function runDueSchedules() {
+    const jobs = await request<CrawlJob[]>("/admin/schedules/run-due", { method: "POST" });
+    setMessage(`已创建 ${jobs.length} 个到期任务`);
+    await refresh();
+  }
+
+  async function retryJob(id: number) {
+    await request<CrawlJob>(`/admin/crawl-jobs/${id}/retry`, { method: "POST" });
+    setMessage("已提交重试任务");
+    await refresh();
+  }
+
+  async function cancelJob(id: number) {
+    await request<CrawlJob>(`/admin/crawl-jobs/${id}/cancel`, { method: "POST" });
+    setMessage("任务已取消");
+    await refresh();
   }
 
   function toggleStatSelection(id: number) {
@@ -247,7 +363,7 @@ function App() {
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod]);
+  }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod, statHouseType, statAreaType]);
 
   return (
     <main>
@@ -267,6 +383,7 @@ function App() {
         <Metric icon={<RadioTower />} label="城市/区域" value={overview?.regions ?? 0} />
         <Metric icon={<Database />} label="指标" value={overview?.indicators ?? 0} />
         <Metric icon={<CheckCircle2 />} label="已发布数据" value={overview?.published_values ?? 0} />
+        <Metric icon={<ListChecks />} label="质量报告" value={qualityReports.length} />
         <Metric icon={<Play />} label="运行中任务" value={activeJobs} />
       </section>
 
@@ -338,6 +455,44 @@ function App() {
 
       <section className="panel">
         <div className="panelHead">
+          <h2>任务调度</h2>
+          <button className="secondary" onClick={runDueSchedules}>
+            <Play size={16} />
+            生成到期任务
+          </button>
+        </div>
+        <form className="formGrid" onSubmit={createSchedule}>
+          <input value={scheduleName} onChange={(event) => setScheduleName(event.target.value)} placeholder="调度名称" />
+          <input value={scheduleUrl} onChange={(event) => setScheduleUrl(event.target.value)} placeholder="目标 URL" />
+          <input
+            type="number"
+            value={scheduleInterval}
+            onChange={(event) => setScheduleInterval(event.target.value)}
+            placeholder="间隔分钟"
+          />
+          <button type="submit">
+            <Save size={16} />
+            保存调度
+          </button>
+        </form>
+        <DataTable
+          headers={["ID", "名称", "状态", "间隔", "上次运行", "下次运行", "操作"]}
+          rows={schedules.map((schedule) => [
+            schedule.id,
+            schedule.name,
+            schedule.enabled ? "enabled" : "disabled",
+            `${schedule.interval_minutes} 分钟`,
+            formatDate(schedule.last_run_at),
+            formatDate(schedule.next_run_at),
+            <button className="secondary" onClick={() => toggleSchedule(schedule)}>
+              {schedule.enabled ? "停用" : "启用"}
+            </button>,
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <div className="panelHead">
           <h2>最近任务</h2>
           <select value={jobStatus} onChange={(event) => setJobStatus(event.target.value)}>
             <option value="">全部状态</option>
@@ -348,16 +503,46 @@ function App() {
           </select>
         </div>
         <DataTable
-          headers={["ID", "状态", "目标", "总数", "导入", "跳过", "开始", "错误"]}
+          headers={["ID", "状态", "触发", "重试", "目标", "总数", "导入", "开始", "错误", "操作"]}
           rows={jobs.map((job) => [
             job.id,
             job.status,
+            job.trigger,
+            job.retry_count,
             truncate(job.target_url ?? "-"),
             job.total_records,
             job.imported_records,
-            job.skipped_records,
             formatDate(job.started_at),
             job.error_type ? `${job.error_type}: ${job.error_message ?? ""}` : (job.error_message ?? "-"),
+            <div className="actions">
+              {job.status === "failed" && (
+                <button className="secondary" onClick={() => retryJob(job.id)}>
+                  重试
+                </button>
+              )}
+              {(job.status === "pending" || job.status === "running") && (
+                <button className="secondary" onClick={() => cancelJob(job.id)}>
+                  取消
+                </button>
+              )}
+            </div>,
+          ])}
+        />
+      </section>
+
+      <section className="panel">
+        <h2>质量报告</h2>
+        <DataTable
+          headers={["ID", "任务", "周期", "状态", "城市", "数据量", "问题", "时间"]}
+          rows={qualityReports.map((report) => [
+            report.id,
+            report.crawl_job_id ?? "-",
+            report.period ?? "-",
+            report.status,
+            `${report.actual_regions}/${report.expected_regions}`,
+            report.checked_values,
+            [...report.errors, ...report.warnings].join("；") || "-",
+            formatDate(report.created_at),
           ])}
         />
       </section>
@@ -401,6 +586,8 @@ function App() {
           <div className="actions wideActions">
             <select value={statStatus} onChange={(event) => setStatStatus(event.target.value)}>
               <option value="draft">待发布</option>
+              <option value="ready_for_review">待审核</option>
+              <option value="quality_failed">质量失败</option>
               <option value="published">已发布</option>
               <option value="rejected">已拒绝</option>
             </select>
@@ -421,6 +608,18 @@ function App() {
               ))}
             </select>
             <input type="date" value={statPeriod} onChange={(event) => setStatPeriod(event.target.value)} />
+            <select value={statHouseType} onChange={(event) => setStatHouseType(event.target.value)}>
+              <option value="">全部住宅</option>
+              <option value="new_house">新建商品住宅</option>
+              <option value="second_hand">二手住宅</option>
+            </select>
+            <select value={statAreaType} onChange={(event) => setStatAreaType(event.target.value)}>
+              <option value="">全部面积</option>
+              <option value="none">不分面积</option>
+              <option value="under_90">90㎡以下</option>
+              <option value="between_90_144">90-144㎡</option>
+              <option value="over_144">144㎡以上</option>
+            </select>
             <button className="secondary" onClick={() => refresh()}>
               <Filter size={16} />
               筛选
@@ -428,6 +627,10 @@ function App() {
             <button onClick={publishSelected} disabled={publishing || selectedStatIds.length === 0}>
               <CheckCircle2 size={16} />
               发布选中({selectedStatIds.length})
+            </button>
+            <input value={rejectReason} onChange={(event) => setRejectReason(event.target.value)} placeholder="驳回原因" />
+            <button className="secondary" onClick={rejectSelected} disabled={selectedStatIds.length === 0}>
+              驳回选中
             </button>
           </div>
         </div>
@@ -470,6 +673,20 @@ function App() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>发布批次</h2>
+        <DataTable
+          headers={["ID", "动作", "数量", "原因", "时间"]}
+          rows={publishBatches.map((batch) => [
+            batch.id,
+            batch.action,
+            batch.item_count,
+            batch.reason ?? "-",
+            formatDate(batch.created_at),
+          ])}
+        />
       </section>
     </main>
   );
