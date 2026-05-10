@@ -303,6 +303,13 @@ input[type="checkbox"] {
   font-size: 13px;
 }
 
+.configForm {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+
 .keyValue strong {
   overflow-wrap: anywhere;
 }

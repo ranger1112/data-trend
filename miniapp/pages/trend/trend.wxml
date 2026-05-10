@@ -26,6 +26,23 @@
 
   <view wx:if="{{error}}" class="error">{{error}}</view>
   <view class="panel">
+    <text class="panelTitle">指标说明</text>
+    <text class="secondary">{{currentIndicator.description || '暂无指标说明'}}</text>
+    <text class="secondary">口径：{{currentIndicator.methodology || '暂无'}}</text>
+    <text class="secondary">频率：{{currentIndicator.update_frequency || '暂无'}}</text>
+    <text class="secondary">适用：{{currentIndicator.usage_scenario || '暂无'}}</text>
+  </view>
+
+  <view class="panel">
+    <text class="panelTitle">变化摘要</text>
+    <text class="secondary">{{trendAnalysis.summary || '暂无趋势摘要'}}</text>
+    <view class="row">
+      <text>近{{trendAnalysis.window || 0}}期高/低/均值</text>
+      <text class="value">{{trendAnalysis.window_high || '-'}} / {{trendAnalysis.window_low || '-'}} / {{trendAnalysis.window_average || '-'}}</text>
+    </view>
+  </view>
+
+  <view class="panel">
     <text class="panelTitle">时间序列</text>
     <block wx:for="{{trend}}" wx:key="period">
       <view class="row">
@@ -42,6 +59,7 @@
 
   <view wx:if="{{comparison.length > 0}}" class="panel">
     <text class="panelTitle">城市对比</text>
+    <text class="secondary">{{comparisonAnalysis.summary || '暂无对比摘要'}}</text>
     <block wx:for="{{comparison}}" wx:key="region_id">
       <text class="sectionLabel">{{item.region}}</text>
       <view class="trendLine">

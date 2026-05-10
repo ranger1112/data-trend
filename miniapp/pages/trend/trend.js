@@ -8,7 +8,9 @@ Page({
     compareRegions: [],
     currentIndicator: {},
     trend: [],
+    trendAnalysis: {},
     comparison: [],
+    comparisonAnalysis: {},
     loading: false,
     error: ""
   },
@@ -61,7 +63,7 @@ Page({
     return this.request(
       `/mini/stat-values/trend?region_id=${currentRegion.id}&indicator_code=${currentIndicator.code}`
     )
-      .then((res) => this.setData({ trend: res.items || [] }))
+      .then((res) => this.setData({ trend: res.items || [], trendAnalysis: res.analysis || {} }))
       .catch(() => this.setData({ error: "趋势数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
   },
@@ -69,12 +71,12 @@ Page({
   loadComparison() {
     const { compareRegions, currentIndicator } = this.data;
     if (compareRegions.length < 2 || !currentIndicator.code) {
-      this.setData({ comparison: [] });
+      this.setData({ comparison: [], comparisonAnalysis: {} });
       return Promise.resolve();
     }
     const ids = compareRegions.map((region) => region.id).join(",");
     return this.request(`/mini/stat-values/compare?region_ids=${ids}&indicator_code=${currentIndicator.code}`)
-      .then((res) => this.setData({ comparison: res.series || [] }))
+      .then((res) => this.setData({ comparison: res.series || [], comparisonAnalysis: res.analysis || {} }))
       .catch(() => this.setData({ error: "对比数据加载失败" }));
   },
 

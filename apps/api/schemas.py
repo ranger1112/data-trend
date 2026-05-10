@@ -177,6 +177,10 @@ class IndicatorPatch(BaseModel):
     category: str | None = None
     unit: str | None = None
     description: str | None = None
+    methodology: str | None = None
+    update_frequency: str | None = None
+    usage_scenario: str | None = None
+    caveats: str | None = None
     precision: int | None = Field(default=None, ge=0, le=6)
     sort_order: int | None = None
     default_dimensions: dict[str, Any] | None = None
@@ -321,6 +325,10 @@ class IndicatorOut(BaseModel):
     category: str = "general"
     unit: str | None
     description: str | None
+    methodology: str | None = None
+    update_frequency: str | None = None
+    usage_scenario: str | None = None
+    caveats: str | None = None
     precision: int = 2
     sort_order: int = 0
     default_dimensions: dict[str, Any] = {}
@@ -372,6 +380,7 @@ class TrendResponse(BaseModel):
     region_id: int
     indicator_code: str
     items: list[TrendPoint]
+    analysis: dict[str, Any]
     updated_at: datetime | None = None
     cache_ttl_seconds: int = 300
 
@@ -385,6 +394,7 @@ class ComparisonTrendItem(BaseModel):
 class ComparisonTrendResponse(BaseModel):
     indicator_code: str
     series: list[ComparisonTrendItem]
+    analysis: dict[str, Any]
     updated_at: datetime | None = None
     cache_ttl_seconds: int = 300
 

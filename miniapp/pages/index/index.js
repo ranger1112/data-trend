@@ -11,6 +11,7 @@ Page({
     indicatorGroups: [],
     latestValues: [],
     trend: [],
+    trendAnalysis: {},
     rankings: { top: [], bottom: [] },
     cityKeyword: "",
     filteredRegions: [],
@@ -112,7 +113,7 @@ Page({
     if (currentAreaType.value) params.push(`area_type=${currentAreaType.value}`);
     const path = `/mini/stat-values/trend?${params.join("&")}`;
     return this.request(path).then((res) => {
-      this.setData({ trend: res.items || [] });
+      this.setData({ trend: res.items || [], trendAnalysis: res.analysis || {} });
     });
   },
 

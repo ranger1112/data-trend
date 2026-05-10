@@ -49,6 +49,7 @@ def get_trend(
     indicator_code: str,
     house_type: str | None = None,
     area_type: str | None = None,
+    window: int = Query(default=6, ge=2, le=24),
     db: Session = Depends(get_db),
 ):
     items = repo.get_published_trend(
@@ -62,6 +63,7 @@ def get_trend(
         "region_id": region_id,
         "indicator_code": indicator_code,
         "items": items,
+        "analysis": repo.analyze_trend(items, window=window),
         "updated_at": repo.get_latest_published_update_time(db),
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
     }
@@ -77,15 +79,17 @@ def compare_trends(
 ):
     ids = [int(item) for item in region_ids.split(",") if item.strip()]
     ids = ids[:3]
+    series = repo.get_published_comparison_trends(
+        db,
+        region_ids=ids,
+        indicator_code=indicator_code,
+        house_type=house_type,
+        area_type=area_type,
+    )
     return {
         "indicator_code": indicator_code,
-        "series": repo.get_published_comparison_trends(
-            db,
-            region_ids=ids,
-            indicator_code=indicator_code,
-            house_type=house_type,
-            area_type=area_type,
-        ),
+        "series": series,
+        "analysis": repo.analyze_comparison(series),
         "updated_at": repo.get_latest_published_update_time(db),
         "cache_ttl_seconds": CACHE_TTL_SECONDS,
     }

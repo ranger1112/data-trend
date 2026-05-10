@@ -626,6 +626,10 @@ def apply_indicator_metadata(indicator: Indicator) -> Indicator:
     indicator.display_name = indicator.display_name or meta.get("display_name")
     indicator.unit = indicator.unit or meta.get("unit", "index")
     indicator.description = indicator.description or meta.get("description")
+    indicator.methodology = indicator.methodology or meta.get("methodology")
+    indicator.update_frequency = indicator.update_frequency or meta.get("update_frequency")
+    indicator.usage_scenario = indicator.usage_scenario or meta.get("usage_scenario")
+    indicator.caveats = indicator.caveats or meta.get("caveats")
     indicator.precision = indicator.precision if indicator.precision is not None else meta.get("precision", 2)
     indicator.sort_order = indicator.sort_order if indicator.sort_order is not None else meta.get("sort_order", 0)
     indicator.default_dimensions = indicator.default_dimensions or meta.get("default_dimensions", {})
@@ -660,6 +664,10 @@ def serialize_indicator(indicator: Indicator) -> dict[str, Any]:
         "category": indicator.category,
         "unit": indicator.unit,
         "description": indicator.description,
+        "methodology": indicator.methodology,
+        "update_frequency": indicator.update_frequency,
+        "usage_scenario": indicator.usage_scenario,
+        "caveats": indicator.caveats,
         "precision": indicator.precision,
         "sort_order": indicator.sort_order,
         "default_dimensions": indicator.default_dimensions or {},
@@ -711,6 +719,10 @@ def update_indicator(db: Session, indicator: Indicator, **changes: Any) -> Indic
         "category",
         "unit",
         "description",
+        "methodology",
+        "update_frequency",
+        "usage_scenario",
+        "caveats",
         "precision",
         "sort_order",
         "default_dimensions",
@@ -1057,6 +1069,65 @@ def get_published_trend(
     return items
 
 
+def analyze_trend(items: list[dict[str, Any]], window: int = 6) -> dict[str, Any]:
+    if not items:
+        return {
+            "latest_value": None,
+            "previous_value": None,
+            "change": None,
+            "change_percent": None,
+            "direction": "none",
+            "window": window,
+            "window_high": None,
+            "window_low": None,
+            "window_average": None,
+            "volatility": "none",
+            "summary": "暂无趋势数据",
+        }
+    latest = items[-1]
+    previous = items[-2] if len(items) > 1 else None
+    latest_value = latest["value"]
+    previous_value = previous["value"] if previous else None
+    change = round(latest_value - previous_value, 4) if previous_value is not None else None
+    change_percent = (
+        round(change / abs(previous_value) * 100, 4)
+        if change is not None and previous_value not in (None, 0)
+        else None
+    )
+    if change is None:
+        direction = "none"
+    elif change > 0:
+        direction = "up"
+    elif change < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+    window_items = items[-window:]
+    values = [item["value"] for item in window_items]
+    window_high = max(values)
+    window_low = min(values)
+    window_average = round(sum(values) / len(values), 4)
+    spread = window_high - window_low
+    volatility = "high" if len(values) >= 3 and spread > abs(window_average) * 0.1 else "normal"
+    direction_labels = {"up": "上涨", "down": "下降", "flat": "持平", "none": "暂无上期数据"}
+    summary = f"最新值 {latest_value}，较上期{direction_labels[direction]}"
+    if change is not None:
+        summary += f" {abs(change)}"
+    return {
+        "latest_value": latest_value,
+        "previous_value": previous_value,
+        "change": change,
+        "change_percent": change_percent,
+        "direction": direction,
+        "window": window,
+        "window_high": window_high,
+        "window_low": window_low,
+        "window_average": window_average,
+        "volatility": volatility,
+        "summary": summary,
+    }
+
+
 def get_published_comparison_trends(
     db: Session,
     region_ids: list[int],
@@ -1074,6 +1145,45 @@ def get_published_comparison_trends(
         for region_id in region_ids
         if region_id in regions
     ]
+
+
+def analyze_comparison(series: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_items = []
+    for item in series:
+        if item["items"]:
+            latest = item["items"][-1]
+            latest_items.append(
+                {
+                    "region_id": item["region_id"],
+                    "region": item["region"],
+                    "period": latest["period"],
+                    "value": latest["value"],
+                }
+            )
+    ranked = sorted(latest_items, key=lambda item: item["value"], reverse=True)
+    for index, item in enumerate(ranked, start=1):
+        item["rank"] = index
+    if len(ranked) < 2:
+        return {
+            "items": ranked,
+            "leader": ranked[0] if ranked else None,
+            "laggard": None,
+            "difference": None,
+            "difference_percent": None,
+            "summary": "对比城市数据不足",
+        }
+    leader = ranked[0]
+    laggard = ranked[-1]
+    difference = round(leader["value"] - laggard["value"], 4)
+    difference_percent = round(difference / abs(laggard["value"]) * 100, 4) if laggard["value"] else None
+    return {
+        "items": ranked,
+        "leader": leader,
+        "laggard": laggard,
+        "difference": difference,
+        "difference_percent": difference_percent,
+        "summary": f"{leader['region']} 领先 {laggard['region']} {difference}",
+    }
 
 
 def get_city_detail(db: Session, region_id: int) -> dict[str, Any] | None:

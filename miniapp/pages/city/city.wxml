@@ -12,6 +12,9 @@
     <view class="panel">
       <text class="panelTitle">{{item.indicator.display_name || item.indicator.name}}</text>
       <text class="secondary">{{item.indicator.description || '暂无指标说明'}}</text>
+      <text class="secondary">口径：{{item.indicator.methodology || '暂无'}}</text>
+      <text class="secondary">频率：{{item.indicator.update_frequency || '暂无'}}</text>
+      <text class="secondary">注意：{{item.indicator.caveats || '暂无'}}</text>
       <view class="row">
         <text>最新值</text>
         <text class="value">{{item.latest ? item.latest.value : '-'}} {{item.indicator.unit || ''}}</text>

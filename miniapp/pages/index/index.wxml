@@ -48,6 +48,9 @@
         <text wx:for="{{item.items}}" wx:for-item="indicator" wx:key="code" class="chip">
           {{indicator.display_name || indicator.name}} {{indicator.unit ? '(' + indicator.unit + ')' : ''}}
         </text>
+        <text wx:for="{{item.items}}" wx:for-item="indicator" wx:key="code" class="secondary">
+          {{indicator.description || '暂无指标说明'}} / {{indicator.update_frequency || '未知频率'}}
+        </text>
       </view>
     </block>
   </view>
@@ -78,6 +81,9 @@
       <text wx:for="{{homeRecommendations.recommended_indicators}}" wx:key="code" class="chip">
         {{item.display_name || item.name}}
       </text>
+      <text wx:for="{{homeRecommendations.recommended_indicators}}" wx:key="code" class="secondary">
+        {{item.description || '暂无指标说明'}}
+      </text>
     </view>
   </view>
 
@@ -97,6 +103,7 @@
 
   <view class="panel">
     <text class="panelTitle">趋势图（时间正序）</text>
+    <text class="secondary">{{trendAnalysis.summary || '暂无趋势摘要'}}</text>
     <block wx:for="{{trend}}" wx:key="period">
       <view class="row">
         <text>{{item.period}}</text>

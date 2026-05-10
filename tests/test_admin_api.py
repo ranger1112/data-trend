@@ -297,11 +297,21 @@ def test_indicator_config_and_quality_rules_are_configurable(tmp_path):
 
     patch_indicator = client.patch(
         "/admin/indicators/cpi_yoy",
-        json={"display_name": "居民消费价格同比", "miniapp_visible": False, "sort_order": 999},
+        json={
+            "display_name": "居民消费价格同比",
+            "miniapp_visible": False,
+            "sort_order": 999,
+            "methodology": "CPI 同比测试口径",
+            "update_frequency": "月度",
+            "usage_scenario": "观察消费价格年度变化",
+            "caveats": "受基数影响",
+        },
         headers=headers,
     )
     assert patch_indicator.status_code == 200
     assert patch_indicator.json()["display_name"] == "居民消费价格同比"
+    assert patch_indicator.json()["methodology"] == "CPI 同比测试口径"
+    assert patch_indicator.json()["update_frequency"] == "月度"
     indicators_response = client.get("/admin/indicators", headers=headers)
     assert indicators_response.status_code == 200
     assert any(item["code"] == "cpi_yoy" and item["miniapp_visible"] is False for item in indicators_response.json())
@@ -874,6 +884,8 @@ def test_productized_metadata_config_and_mini_aggregates(tmp_path):
     assert compare_response.status_code == 200
     assert [series["region"] for series in compare_response.json()["series"]] == ["北京", "上海"]
     assert len(compare_response.json()["series"][0]["items"]) == 2
+    assert compare_response.json()["analysis"]["leader"]["region"] == "北京"
+    assert compare_response.json()["analysis"]["difference"] == 1.0
 
     config_response = client.get("/admin/configs", headers=headers)
     assert config_response.status_code == 200
@@ -898,7 +910,16 @@ def test_productized_metadata_config_and_mini_aggregates(tmp_path):
     recommendations_response = client.get("/mini/home/recommendations")
     assert recommendations_response.status_code == 200
     assert recommendations_response.json()["recommended_indicators"][0]["code"] == "cpi_yoy"
+    assert recommendations_response.json()["recommended_indicators"][0]["methodology"]
     assert recommendations_response.json()["recommended_regions"][0]["name"] == "华北"
+
+    trend_response = client.get(
+        f"/mini/stat-values/trend?region_id={beijing_id}&indicator_code=housing_price_mom&window=2"
+    )
+    assert trend_response.status_code == 200
+    assert trend_response.json()["analysis"]["direction"] == "up"
+    assert trend_response.json()["analysis"]["window_high"] == 101.2
+    assert trend_response.json()["analysis"]["window_low"] == 99.8
 
     app.dependency_overrides.clear()
 

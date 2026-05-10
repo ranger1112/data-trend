@@ -68,6 +68,10 @@ type Indicator = {
   category: string;
   unit: string | null;
   description: string | null;
+  methodology: string | null;
+  update_frequency: string | null;
+  usage_scenario: string | null;
+  caveats: string | null;
   precision: number;
   sort_order: number;
   default_dimensions: Record<string, string>;
@@ -494,10 +498,11 @@ function App() {
     });
     setConfigPreview(preview);
     if (preview.diff.length > 0 && !window.confirm(formatConfigPreview(preview, "保存"))) return;
-    await request<AppConfig>(`/admin/configs/${config.key}`, {
+    const updated = await request<AppConfig>(`/admin/configs/${config.key}`, {
       method: "PATCH",
       body: JSON.stringify({ value, description: config.description, reason: "管理端保存" }),
     });
+    setConfigDrafts((drafts) => ({ ...drafts, [updated.key]: JSON.stringify(updated.value, null, 2) }));
     setMessage("配置已保存");
     await refresh();
     if (configHistory?.key === config.key) await loadConfigHistory(config.key);
@@ -530,10 +535,11 @@ function App() {
     });
     setConfigPreview(preview);
     if (!window.confirm(formatConfigPreview(preview, `回滚到 v${version.version}`))) return;
-    await request<AppConfig>(`/admin/configs/${version.key}/rollback`, {
+    const updated = await request<AppConfig>(`/admin/configs/${version.key}/rollback`, {
       method: "POST",
       body: JSON.stringify({ version_id: version.id, reason: `管理端回滚到 v${version.version}` }),
     });
+    setConfigDrafts((drafts) => ({ ...drafts, [updated.key]: JSON.stringify(updated.value, null, 2) }));
     setMessage(`已回滚 ${version.key} 到 v${version.version}`);
     await refresh();
     await loadConfigHistory(version.key);
@@ -1201,7 +1207,7 @@ function App() {
       <section className="panel">
         <h2>指标展示配置</h2>
         <DataTable
-          headers={["指标", "分类", "展示名", "单位", "排序", "小程序", "操作"]}
+          headers={["指标", "分类", "展示名", "单位", "口径", "频率", "场景", "注意", "排序", "小程序", "操作"]}
           rows={indicators.map((indicator) => {
             const draft = indicatorDrafts[indicator.code] || {};
             return [
@@ -1230,6 +1236,42 @@ function App() {
                   setIndicatorDrafts({
                     ...indicatorDrafts,
                     [indicator.code]: { ...draft, unit: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.methodology as string | undefined) ?? indicator.methodology ?? ""}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, methodology: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.update_frequency as string | undefined) ?? indicator.update_frequency ?? ""}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, update_frequency: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.usage_scenario as string | undefined) ?? indicator.usage_scenario ?? ""}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, usage_scenario: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.caveats as string | undefined) ?? indicator.caveats ?? ""}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, caveats: event.target.value },
                   })
                 }
               />,
@@ -1318,6 +1360,9 @@ function App() {
                 </button>
                 <span>{formatDate(config.updated_at)}</span>
               </div>
+              {renderConfigForm(config, configDrafts[config.key] ?? "{}", (value) =>
+                setConfigDrafts({ ...configDrafts, [config.key]: value }),
+              )}
               <textarea
                 value={configDrafts[config.key] ?? ""}
                 onChange={(event) => setConfigDrafts({ ...configDrafts, [config.key]: event.target.value })}
@@ -1415,6 +1460,64 @@ function KeyValue({ label, value }: { label: string; value: React.ReactNode }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function renderConfigForm(config: AppConfig, draftText: string, onChange: (value: string) => void) {
+  let draft: Record<string, unknown>;
+  try {
+    draft = JSON.parse(draftText || "{}");
+  } catch {
+    return <div className="muted">JSON 格式正确后显示表单</div>;
+  }
+  const update = (patch: Record<string, unknown>) => onChange(JSON.stringify({ ...draft, ...patch }, null, 2));
+  if (config.key === "miniapp.home") {
+    return (
+      <div className="configForm">
+        <input value={stringList(draft.recommended_indicators).join(",")} onChange={(event) => update({ recommended_indicators: splitList(event.target.value) })} placeholder="推荐指标，逗号分隔" />
+        <input value={stringList(draft.recommended_regions).join(",")} onChange={(event) => update({ recommended_regions: splitList(event.target.value) })} placeholder="推荐城市，逗号分隔" />
+        <input value={String(draft.ranking_indicator ?? "")} onChange={(event) => update({ ranking_indicator: event.target.value })} placeholder="默认排行指标" />
+        <input value={String(draft.default_trend_indicator ?? "")} onChange={(event) => update({ default_trend_indicator: event.target.value })} placeholder="默认趋势指标" />
+      </div>
+    );
+  }
+  if (config.key === "data_source.defaults") {
+    return (
+      <div className="configForm">
+        <input type="number" value={Number(draft.max_retries ?? 3)} onChange={(event) => update({ max_retries: Number(event.target.value) })} placeholder="默认重试次数" />
+        <input type="number" value={Number(draft.timeout_seconds ?? 1800)} onChange={(event) => update({ timeout_seconds: Number(event.target.value) })} placeholder="默认超时时间" />
+        <input type="number" value={Number(draft.interval_minutes ?? 1440)} onChange={(event) => update({ interval_minutes: Number(event.target.value) })} placeholder="默认调度间隔" />
+      </div>
+    );
+  }
+  if (config.key === "quality.rules") {
+    const configuredTypes = Object.keys(draft).filter((key) => typeof draft[key] === "object" && draft[key] !== null);
+    const sourceType = configuredTypes[0] ?? "housing_price";
+    const rules = (draft[sourceType] as Record<string, unknown> | undefined) ?? {};
+    const updateRules = (patch: Record<string, unknown>) =>
+      update({ [sourceType]: { ...rules, ...patch } });
+    return (
+      <div className="configForm">
+        <select value={sourceType} onChange={(event) => update({ [event.target.value]: draft[event.target.value] ?? {} })}>
+          <option value="housing_price">housing_price</option>
+          <option value="cpi">cpi</option>
+        </select>
+        <input type="number" value={Number(rules.expected_regions ?? 0)} onChange={(event) => updateRules({ expected_regions: Number(event.target.value) })} placeholder="期望城市数" />
+        <input type="number" value={Number(rules.expected_indicators ?? 0)} onChange={(event) => updateRules({ expected_indicators: Number(event.target.value) })} placeholder="期望指标数" />
+        <input value={stringList(rules.required_dimensions).join(",")} onChange={(event) => updateRules({ required_dimensions: splitList(event.target.value) })} placeholder="必填维度" />
+        <input type="number" value={Number(rules.value_min ?? 0)} onChange={(event) => updateRules({ value_min: Number(event.target.value) })} placeholder="值域下限" />
+        <input type="number" value={Number(rules.value_max ?? 0)} onChange={(event) => updateRules({ value_max: Number(event.target.value) })} placeholder="值域上限" />
+      </div>
+    );
+  }
+  return null;
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function splitList(value: string) {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function formatDate(value: string | null) {

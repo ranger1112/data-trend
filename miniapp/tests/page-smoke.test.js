@@ -64,23 +64,23 @@ const fixtures = {
     { id: 2, name: "全国", normalized_name: "country", level: "country", parent_id: null },
   ],
   "/mini/indicators": [
-    { id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比", category: "housing_price" },
-    { id: 2, code: "cpi_yoy", name: "CPI 同比", display_name: "CPI 同比", category: "cpi" },
+    { id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比", category: "housing_price", description: "短期价格变化", methodology: "环比口径", update_frequency: "月度", usage_scenario: "观察短期变化" },
+    { id: 2, code: "cpi_yoy", name: "CPI 同比", display_name: "CPI 同比", category: "cpi", description: "消费价格年度变化", methodology: "同比口径", update_frequency: "月度", usage_scenario: "观察通胀" },
   ],
   "/mini/indicator-groups": [
     {
       category: "housing_price",
       name: "房价指标",
-      items: [{ id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比" }],
+      items: [{ id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比", description: "短期价格变化", update_frequency: "月度" }],
     },
     {
       category: "cpi",
       name: "居民消费价格",
-      items: [{ id: 2, code: "cpi_yoy", name: "CPI 同比", display_name: "CPI 同比" }],
+      items: [{ id: 2, code: "cpi_yoy", name: "CPI 同比", display_name: "CPI 同比", description: "消费价格年度变化", update_frequency: "月度" }],
     },
   ],
   "/mini/home/recommendations": {
-    recommended_indicators: [{ id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比" }],
+    recommended_indicators: [{ id: 1, code: "housing_price_mom", name: "房价环比", display_name: "住宅价格环比", description: "短期价格变化" }],
     recommended_regions: [{ id: 1, name: "北京", level: "city" }],
     ranking_indicator: "housing_price_mom",
     default_trend_indicator: "housing_price_mom",
@@ -102,6 +102,9 @@ const fixtures = {
           category: "housing_price",
           unit: "%",
           description: "住宅销售价格较上月变化幅度。",
+          methodology: "环比口径",
+          update_frequency: "月度",
+          caveats: "短期波动较大",
         },
       },
     ],
@@ -122,11 +125,13 @@ const fixtures = {
     cache_ttl_seconds: 300,
   },
   "/mini/stat-values/trend?region_id=1&indicator_code=housing_price_mom": {
-    items: [{ period: "2026-03-01", value: 101.2 }],
+    items: [{ period: "2026-02-01", value: 100.2 }, { period: "2026-03-01", value: 101.2 }],
+    analysis: { direction: "up", summary: "最新值 101.2，较上期上涨 1", window: 6, window_high: 101.2, window_low: 100.2, window_average: 100.7 },
     cache_ttl_seconds: 300,
   },
   "/mini/stat-values/trend?region_id=1&indicator_code=cpi_yoy": {
     items: [{ period: "2026-03-01", value: -0.1 }],
+    analysis: { direction: "none", summary: "暂无上期数据", window: 6 },
     cache_ttl_seconds: 300,
   },
   "/mini/stat-values/compare?region_ids=1,2&indicator_code=housing_price_mom": {
@@ -134,6 +139,7 @@ const fixtures = {
       { region_id: 1, region: "北京", items: [{ period: "2026-03-01", value: 101.2 }] },
       { region_id: 2, region: "全国", items: [{ period: "2026-03-01", value: -0.1 }] },
     ],
+    analysis: { summary: "北京 领先 全国 101.3", difference: 101.3, leader: { region: "北京" } },
     cache_ttl_seconds: 300,
   },
   "/mini/stat-values/compare?region_ids=2,1&indicator_code=housing_price_mom": {
@@ -141,6 +147,7 @@ const fixtures = {
       { region_id: 2, region: "全国", items: [{ period: "2026-03-01", value: -0.1 }] },
       { region_id: 1, region: "北京", items: [{ period: "2026-03-01", value: 101.2 }] },
     ],
+    analysis: { summary: "北京 领先 全国 101.3", difference: 101.3, leader: { region: "北京" } },
     cache_ttl_seconds: 300,
   },
 };
@@ -153,7 +160,8 @@ test("index page supports loading, caching, favorite city and navigation", async
   assert.equal(page.data.currentRegion.name, "北京");
   assert.equal(page.data.currentIndicator.code, "housing_price_mom");
   assert.equal(page.data.latestValues.length, 1);
-  assert.equal(page.data.trend.length, 1);
+  assert.equal(page.data.trend.length, 2);
+  assert.equal(page.data.trendAnalysis.direction, "up");
   assert.equal(page.data.indicatorGroups.length, 2);
   assert.equal(page.data.homeRecommendations.recommended_indicators[0].code, "housing_price_mom");
 
@@ -178,7 +186,8 @@ test("index page supports loading, caching, favorite city and navigation", async
 test("trend and ranking pages load and switch core state", async () => {
   const trendPage = loadPage("pages/trend/trend.js", createWxMock(fixtures));
   await trendPage.loadBase();
-  assert.equal(trendPage.data.trend[0].value, 101.2);
+  assert.equal(trendPage.data.trend.at(-1).value, 101.2);
+  assert.equal(trendPage.data.trendAnalysis.direction, "up");
   trendPage.onIndicatorChange({ detail: { value: 1 } });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(trendPage.data.currentIndicator.code, "cpi_yoy");
@@ -188,6 +197,7 @@ test("trend and ranking pages load and switch core state", async () => {
   trendPage.toggleCompareRegion({ detail: { value: 1 } });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(trendPage.data.comparison.length, 2);
+  assert.equal(trendPage.data.comparisonAnalysis.difference, 101.3);
 
   const rankingPage = loadPage("pages/ranking/ranking.js", createWxMock(fixtures));
   await rankingPage.loadBase();
@@ -204,4 +214,5 @@ test("city page loads indicator cards from route options", async () => {
   assert.equal(cityPage.data.cards.length, 1);
   assert.equal(cityPage.data.cards[0].latest.value, 101.2);
   assert.equal(cityPage.data.cards[0].indicator.display_name, "住宅价格环比");
+  assert.equal(cityPage.data.cards[0].indicator.methodology, "环比口径");
 });
