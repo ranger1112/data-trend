@@ -7,12 +7,15 @@ Page({
     currentRegion: {},
     currentIndicator: {},
     overview: {},
+    homeRecommendations: {},
+    indicatorGroups: [],
     latestValues: [],
     trend: [],
     rankings: { top: [], bottom: [] },
     cityKeyword: "",
     filteredRegions: [],
     favoriteCities: [],
+    favoriteCombos: [],
     houseTypes: [
       { label: "全部住宅", value: "" },
       { label: "新建商品住宅", value: "new_house" },
@@ -39,18 +42,24 @@ Page({
     return Promise.all([
       this.request("/mini/dashboard/overview"),
       this.request("/mini/regions"),
-      this.request("/mini/indicators")
+      this.request("/mini/indicators"),
+      this.request("/mini/indicator-groups"),
+      this.request("/mini/home/recommendations")
     ])
-      .then(([overview, regions, indicators]) => {
+      .then(([overview, regions, indicators, indicatorGroups, homeRecommendations]) => {
         const favoriteCities = wx.getStorageSync("favoriteCities") || [];
+        const favoriteCombos = wx.getStorageSync("favoriteCombos") || [];
         const currentRegion = regions[0] || {};
         const currentIndicator = indicators[0] || {};
         this.setData({
           overview,
+          homeRecommendations,
           regions,
           filteredRegions: regions,
           indicators,
+          indicatorGroups,
           favoriteCities,
+          favoriteCombos,
           currentRegion,
           currentIndicator
         });
@@ -174,6 +183,27 @@ Page({
       : [currentRegion, ...this.data.favoriteCities].slice(0, 8);
     wx.setStorageSync("favoriteCities", favoriteCities);
     this.setData({ favoriteCities });
+  },
+
+  toggleFavoriteCombo() {
+    const { currentRegion, currentIndicator } = this.data;
+    if (!currentRegion.id || !currentIndicator.code) return;
+    const combo = {
+      region_id: currentRegion.id,
+      region_name: currentRegion.name,
+      indicator_code: currentIndicator.code,
+      indicator_name: currentIndicator.display_name || currentIndicator.name
+    };
+    const exists = this.data.favoriteCombos.some(
+      (item) => item.region_id === combo.region_id && item.indicator_code === combo.indicator_code
+    );
+    const favoriteCombos = exists
+      ? this.data.favoriteCombos.filter(
+          (item) => !(item.region_id === combo.region_id && item.indicator_code === combo.indicator_code)
+        )
+      : [combo, ...this.data.favoriteCombos].slice(0, 8);
+    wx.setStorageSync("favoriteCombos", favoriteCombos);
+    this.setData({ favoriteCombos });
   },
 
   goCityDetail() {

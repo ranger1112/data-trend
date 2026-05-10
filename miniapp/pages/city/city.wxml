@@ -2,7 +2,7 @@
   <view class="header">
     <text class="eyebrow">city</text>
     <text class="title">{{regionName}}</text>
-    <text class="subtitle">指标详情与最近趋势</text>
+    <text class="subtitle">{{region.level || 'city'}} / 指标详情</text>
   </view>
 
   <view wx:if="{{error}}" class="error">{{error}}</view>
@@ -10,17 +10,15 @@
 
   <block wx:for="{{cards}}" wx:key="indicator.code">
     <view class="panel">
-      <text class="panelTitle">{{item.indicator.name}}</text>
+      <text class="panelTitle">{{item.indicator.display_name || item.indicator.name}}</text>
+      <text class="secondary">{{item.indicator.description || '暂无指标说明'}}</text>
       <view class="row">
         <text>最新值</text>
-        <text class="value">{{item.latest ? item.latest.value : '-'}}</text>
+        <text class="value">{{item.latest ? item.latest.value : '-'}} {{item.indicator.unit || ''}}</text>
       </view>
       <view class="row">
         <text>最新周期</text>
         <text>{{item.latest ? item.latest.period : '-'}}</text>
-      </view>
-      <view class="trendLine">
-        <text wx:for="{{item.points}}" wx:key="period" class="trendDot">{{item.value}}</text>
       </view>
     </view>
   </block>

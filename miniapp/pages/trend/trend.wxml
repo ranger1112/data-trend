@@ -2,7 +2,7 @@
   <view class="header">
     <text class="eyebrow">trend</text>
     <text class="title">趋势分析</text>
-    <text class="subtitle">{{currentRegion.name || '城市'}} / {{currentIndicator.name || '指标'}}</text>
+    <text class="subtitle">{{currentRegion.name || '城市'}} / {{currentIndicator.display_name || currentIndicator.name || '指标'}}</text>
   </view>
 
   <view class="toolbar">
@@ -10,8 +10,18 @@
       <view class="select">{{currentRegion.name || '选择城市'}}</view>
     </picker>
     <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
-      <view class="select">{{currentIndicator.name || '选择指标'}}</view>
+      <view class="select">{{currentIndicator.display_name || currentIndicator.name || '选择指标'}}</view>
     </picker>
+    <picker mode="selector" range="{{regions}}" range-key="name" bindchange="toggleCompareRegion">
+      <view class="select">加入对比城市</view>
+    </picker>
+  </view>
+
+  <view wx:if="{{compareRegions.length > 0}}" class="panel">
+    <text class="panelTitle">对比城市</text>
+    <view class="chips">
+      <text wx:for="{{compareRegions}}" wx:key="id" class="chip">{{item.name}}</text>
+    </view>
   </view>
 
   <view wx:if="{{error}}" class="error">{{error}}</view>
@@ -28,5 +38,15 @@
     </block>
     <view wx:if="{{trend.length === 0 && !loading}}" class="empty">暂无趋势数据</view>
     <view wx:if="{{loading}}" class="empty">加载中...</view>
+  </view>
+
+  <view wx:if="{{comparison.length > 0}}" class="panel">
+    <text class="panelTitle">城市对比</text>
+    <block wx:for="{{comparison}}" wx:key="region_id">
+      <text class="sectionLabel">{{item.region}}</text>
+      <view class="trendLine">
+        <text wx:for="{{item.items}}" wx:key="period" class="trendDot">{{item.value}}</text>
+      </view>
+    </block>
   </view>
 </view>

@@ -28,7 +28,7 @@
       <view class="select">{{currentRegion.name || '选择城市'}}</view>
     </picker>
     <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
-      <view class="select">{{currentIndicator.name || '选择指标'}}</view>
+      <view class="select">{{currentIndicator.display_name || currentIndicator.name || '选择指标'}}</view>
     </picker>
     <picker mode="selector" range="{{houseTypes}}" range-key="label" bindchange="onHouseTypeChange">
       <view class="select">{{currentHouseType.label}}</view>
@@ -37,6 +37,19 @@
       <view class="select">{{currentAreaType.label}}</view>
     </picker>
     <button class="favoriteBtn" bindtap="toggleFavoriteCity">收藏城市</button>
+    <button class="favoriteBtn" bindtap="toggleFavoriteCombo">收藏组合</button>
+  </view>
+
+  <view class="panel">
+    <text class="panelTitle">指标分类</text>
+    <block wx:for="{{indicatorGroups}}" wx:key="category">
+      <text class="sectionLabel">{{item.name}}</text>
+      <view class="chips">
+        <text wx:for="{{item.items}}" wx:for-item="indicator" wx:key="code" class="chip">
+          {{indicator.display_name || indicator.name}} {{indicator.unit ? '(' + indicator.unit + ')' : ''}}
+        </text>
+      </view>
+    </block>
   </view>
 
   <view class="navGrid">
@@ -49,6 +62,22 @@
     <text class="panelTitle">常看城市</text>
     <view class="chips">
       <text wx:for="{{favoriteCities}}" wx:key="id" class="chip">{{item.name}}</text>
+    </view>
+  </view>
+
+  <view wx:if="{{favoriteCombos.length > 0}}" class="panel">
+    <text class="panelTitle">收藏组合</text>
+    <view class="chips">
+      <text wx:for="{{favoriteCombos}}" wx:key="indicator_code" class="chip">{{item.region_name}} / {{item.indicator_name}}</text>
+    </view>
+  </view>
+
+  <view wx:if="{{homeRecommendations.recommended_indicators.length > 0}}" class="panel">
+    <text class="panelTitle">推荐指标</text>
+    <view class="chips">
+      <text wx:for="{{homeRecommendations.recommended_indicators}}" wx:key="code" class="chip">
+        {{item.display_name || item.name}}
+      </text>
     </view>
   </view>
 

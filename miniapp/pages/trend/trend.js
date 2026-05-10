@@ -5,8 +5,10 @@ Page({
     regions: [],
     indicators: [],
     currentRegion: {},
+    compareRegions: [],
     currentIndicator: {},
     trend: [],
+    comparison: [],
     loading: false,
     error: ""
   },
@@ -36,6 +38,17 @@ Page({
     this.loadTrend();
   },
 
+  toggleCompareRegion(event) {
+    const region = this.data.regions[event.detail.value];
+    if (!region || !region.id) return;
+    const exists = this.data.compareRegions.some((item) => item.id === region.id);
+    const compareRegions = exists
+      ? this.data.compareRegions.filter((item) => item.id !== region.id)
+      : [region, ...this.data.compareRegions].slice(0, 3);
+    this.setData({ compareRegions });
+    this.loadComparison();
+  },
+
   onIndicatorChange(event) {
     this.setData({ currentIndicator: this.data.indicators[event.detail.value] });
     this.loadTrend();
@@ -51,6 +64,18 @@ Page({
       .then((res) => this.setData({ trend: res.items || [] }))
       .catch(() => this.setData({ error: "趋势数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
+  },
+
+  loadComparison() {
+    const { compareRegions, currentIndicator } = this.data;
+    if (compareRegions.length < 2 || !currentIndicator.code) {
+      this.setData({ comparison: [] });
+      return Promise.resolve();
+    }
+    const ids = compareRegions.map((region) => region.id).join(",");
+    return this.request(`/mini/stat-values/compare?region_ids=${ids}&indicator_code=${currentIndicator.code}`)
+      .then((res) => this.setData({ comparison: res.series || [] }))
+      .catch(() => this.setData({ error: "对比数据加载失败" }));
   },
 
   request(path) {

@@ -4,7 +4,7 @@ Page({
   data: {
     regionId: "",
     regionName: "",
-    indicators: [],
+    region: {},
     cards: [],
     loading: false,
     error: ""
@@ -20,22 +20,18 @@ Page({
 
   loadPage() {
     this.setData({ loading: true, error: "" });
-    return this.request("/mini/indicators")
-      .then((indicators) => {
-        this.setData({ indicators });
-        return Promise.all(
-          indicators.map((indicator) =>
-            this.request(
-              `/mini/stat-values/trend?region_id=${this.data.regionId}&indicator_code=${indicator.code}`
-            ).then((trend) => ({
-              indicator,
-              latest: (trend.items || [])[trend.items.length - 1],
-              points: trend.items || []
-            }))
-          )
-        );
+    return this.request(`/mini/regions/${this.data.regionId}/detail`)
+      .then((detail) => {
+        this.setData({
+          region: detail.region || {},
+          regionName: (detail.region && detail.region.name) || this.data.regionName,
+          cards: (detail.indicator_cards || []).map((card) => ({
+            indicator: card.indicator,
+            latest: card,
+            points: []
+          }))
+        });
       })
-      .then((cards) => this.setData({ cards }))
       .catch(() => this.setData({ error: "城市数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
   },
