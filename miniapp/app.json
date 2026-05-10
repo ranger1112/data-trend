@@ -1,6 +1,9 @@
 {
   "pages": [
-    "pages/index/index"
+    "pages/index/index",
+    "pages/city/city",
+    "pages/trend/trend",
+    "pages/ranking/ranking"
   ],
   "window": {
     "navigationBarTitleText": "数据趋势",
@@ -9,4 +12,3 @@
     "backgroundColor": "#f7f8fb"
   }
 }
-

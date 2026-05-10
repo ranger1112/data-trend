@@ -16,12 +16,15 @@ import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 const DEFAULT_URL = "https://www.stats.gov.cn/sj/zxfb/202604/t20260416_1963320.html";
+const DEFAULT_CPI_URL = "https://www.stats.gov.cn/sj/zxfb/202604/t20260413_1963263.html";
 
 type Overview = {
   regions: number;
   indicators: number;
   published_values: number;
   latest_period: string | null;
+  updated_at: string | null;
+  cache_ttl_seconds: number;
 };
 
 type DataSource = {
@@ -31,6 +34,22 @@ type DataSource = {
   source: string;
   type: string;
   enabled: boolean;
+};
+
+type DataSourceHealth = {
+  id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  entry_url: string;
+  latest_job_status: string | null;
+  latest_job_finished_at: string | null;
+  latest_error_type: string | null;
+  latest_error_message: string | null;
+  total_jobs: number;
+  success_jobs: number;
+  failed_jobs: number;
+  success_rate: number;
 };
 
 type Region = {
@@ -52,6 +71,11 @@ type CrawlJob = {
   status: string;
   trigger: string;
   retry_count: number;
+  max_retries: number;
+  next_retry_at: string | null;
+  timeout_seconds: number;
+  locked_at: string | null;
+  locked_by: string | null;
   total_records: number;
   imported_records: number;
   skipped_records: number;
@@ -102,6 +126,16 @@ type QualityReport = {
   checked_values: number;
   errors: string[];
   warnings: string[];
+  details: {
+    severity: string;
+    rule: string;
+    message: string;
+    indicator?: string;
+    region?: string;
+    period?: string;
+    value?: number;
+    dimensions?: Record<string, unknown>;
+  }[];
   created_at: string;
 };
 
@@ -132,9 +166,17 @@ type DataSourceForm = {
   enabled: boolean;
 };
 
+type AuthState = {
+  token: string;
+  username: string;
+  role: string;
+};
+
 function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [dataSourceTypes, setDataSourceTypes] = useState<string[]>([]);
+  const [sourceHealth, setSourceHealth] = useState<DataSourceHealth[]>([]);
   const [regions, setRegions] = useState<Region[]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [jobs, setJobs] = useState<CrawlJob[]>([]);
@@ -173,10 +215,19 @@ function App() {
   const [running, setRunning] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [message, setMessage] = useState("");
+  const [auth, setAuth] = useState<AuthState | null>(() => {
+    const raw = window.localStorage.getItem("dataTrendAdminAuth");
+    return raw ? JSON.parse(raw) : null;
+  });
+  const [loginForm, setLoginForm] = useState({ username: "admin", password: "admin" });
 
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE}${path}`, {
-      headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+        ...(options?.headers ?? {}),
+      },
       ...options,
     });
     if (!response.ok) {
@@ -186,10 +237,35 @@ function App() {
     return response.json();
   }
 
+  async function login(event: React.FormEvent) {
+    event.preventDefault();
+    const response = await fetch(`${API_BASE}/admin/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginForm),
+    });
+    if (!response.ok) {
+      setMessage("登录失败");
+      return;
+    }
+    const body = await response.json();
+    const nextAuth = { token: body.access_token, username: body.username, role: body.role };
+    window.localStorage.setItem("dataTrendAdminAuth", JSON.stringify(nextAuth));
+    setAuth(nextAuth);
+    setMessage("");
+  }
+
+  function logout() {
+    window.localStorage.removeItem("dataTrendAdminAuth");
+    setAuth(null);
+  }
+
   async function refresh() {
     const [
       overviewRes,
       sourcesRes,
+      sourceTypesRes,
+      sourceHealthRes,
       regionsRes,
       indicatorsRes,
       jobsRes,
@@ -202,6 +278,8 @@ function App() {
     ] = await Promise.all([
       request<Overview>("/mini/dashboard/overview"),
       request<DataSource[]>("/admin/data-sources"),
+      request<string[]>("/admin/data-source-types"),
+      request<DataSourceHealth[]>("/admin/data-sources/health"),
       request<Region[]>("/mini/regions"),
       request<Indicator[]>("/mini/indicators"),
       request<CrawlJob[]>(`/admin/crawl-jobs${buildQuery({ status: jobStatus })}`),
@@ -230,6 +308,8 @@ function App() {
     ]);
     setOverview(overviewRes);
     setDataSources(sourcesRes);
+    setDataSourceTypes(sourceTypesRes);
+    setSourceHealth(sourceHealthRes);
     setRegions(regionsRes);
     setIndicators(indicatorsRes);
     setJobs(jobsRes);
@@ -258,6 +338,7 @@ function App() {
   }
 
   async function toggleDataSource(source: DataSource) {
+    if (!window.confirm(`${source.enabled ? "停用" : "启用"}数据源「${source.name}」？`)) return;
     await request<DataSource>(`/admin/data-sources/${source.id}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled: !source.enabled }),
@@ -334,6 +415,7 @@ function App() {
   }
 
   async function toggleSchedule(schedule: Schedule) {
+    if (!window.confirm(`${schedule.enabled ? "停用" : "启用"}调度「${schedule.name}」？`)) return;
     await request<Schedule>(`/admin/schedules/${schedule.id}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled: !schedule.enabled }),
@@ -354,6 +436,7 @@ function App() {
   }
 
   async function cancelJob(id: number) {
+    if (!window.confirm(`取消任务 #${id}？`)) return;
     await request<CrawlJob>(`/admin/crawl-jobs/${id}/cancel`, { method: "POST" });
     setMessage("任务已取消");
     await refresh();
@@ -367,10 +450,14 @@ function App() {
     () => jobs.filter((job) => job.status === "pending" || job.status === "running").length,
     [jobs],
   );
+  const healthBySourceId = useMemo(
+    () => new Map(sourceHealth.map((item) => [item.id, item])),
+    [sourceHealth],
+  );
 
   useEffect(() => {
-    refresh().catch((error) => setMessage(error.message));
-  }, [jobStatus, statStatus]);
+    if (auth) refresh().catch((error) => setMessage(error.message));
+  }, [auth, jobStatus, statStatus]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -381,6 +468,32 @@ function App() {
     return () => window.clearInterval(timer);
   }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod, statHouseType, statAreaType]);
 
+  if (!auth) {
+    return (
+      <main>
+        <section className="loginPanel">
+          <p className="eyebrow">data-trend</p>
+          <h1>管理端登录</h1>
+          {message && <div className="notice">{message}</div>}
+          <form className="formGrid" onSubmit={login}>
+            <input
+              value={loginForm.username}
+              onChange={(event) => setLoginForm({ ...loginForm, username: event.target.value })}
+              placeholder="用户名"
+            />
+            <input
+              type="password"
+              value={loginForm.password}
+              onChange={(event) => setLoginForm({ ...loginForm, password: event.target.value })}
+              placeholder="密码"
+            />
+            <button type="submit">登录</button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main>
       <header className="topbar">
@@ -388,9 +501,13 @@ function App() {
           <p className="eyebrow">data-trend</p>
           <h1>数据采集管理台</h1>
         </div>
-        <button className="iconButton" onClick={() => refresh()} aria-label="刷新">
-          <RefreshCcw size={18} />
-        </button>
+        <div className="actions">
+          <span className="roleTag">{auth.username} / {auth.role}</span>
+          <button className="secondary" onClick={logout}>退出</button>
+          <button className="iconButton" onClick={() => refresh()} aria-label="刷新">
+            <RefreshCcw size={18} />
+          </button>
+        </div>
       </header>
 
       {message && <div className="notice">{message}</div>}
@@ -456,11 +573,48 @@ function App() {
                 onChange={(event) => setSourceForm({ ...sourceForm, source: event.target.value })}
                 placeholder="来源"
               />
-              <input
+              <select
                 value={sourceForm.type}
                 onChange={(event) => setSourceForm({ ...sourceForm, type: event.target.value })}
-                placeholder="类型"
-              />
+              >
+                {(dataSourceTypes.length ? dataSourceTypes : ["housing_price", "cpi"]).map((type) => (
+                  <option key={type} value={type}>
+                    {formatSourceType(type)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="presetActions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  setSourceForm({
+                    name: "国家统计局 CPI",
+                    entry_url: DEFAULT_CPI_URL,
+                    source: "国家统计局",
+                    type: "cpi",
+                    enabled: true,
+                  })
+                }
+              >
+                CPI 模板
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  setSourceForm({
+                    name: "国家统计局房价指数",
+                    entry_url: DEFAULT_URL,
+                    source: "国家统计局",
+                    type: "housing_price",
+                    enabled: true,
+                  })
+                }
+              >
+                房价模板
+              </button>
             </div>
             <button type="submit" disabled={saving}>
               <Save size={16} />
@@ -472,7 +626,10 @@ function App() {
               <div className="listItem" key={source.id}>
                 <div>
                   <strong>{source.name}</strong>
-                  <span>{source.entry_url}</span>
+                  <span>{formatSourceType(source.type)} / {source.entry_url}</span>
+                  <small>
+                    {formatHealth(healthBySourceId.get(source.id))}
+                  </small>
                 </div>
                 <button className="secondary" onClick={() => toggleDataSource(source)}>
                   {source.enabled ? "启用" : "停用"}
@@ -557,7 +714,7 @@ function App() {
             job.id,
             job.status,
             job.trigger,
-            job.retry_count,
+            `${job.retry_count}/${job.max_retries}`,
             truncate(job.target_url ?? "-"),
             job.total_records,
             job.imported_records,
@@ -582,7 +739,7 @@ function App() {
       <section className="panel">
         <h2>质量报告</h2>
         <DataTable
-          headers={["ID", "任务", "周期", "状态", "城市", "数据量", "问题", "时间"]}
+          headers={["ID", "任务", "周期", "状态", "城市", "数据量", "问题明细", "时间"]}
           rows={qualityReports.map((report) => [
             report.id,
             report.crawl_job_id ?? "-",
@@ -590,7 +747,7 @@ function App() {
             report.status,
             `${report.actual_regions}/${report.expected_regions}`,
             report.checked_values,
-            [...report.errors, ...report.warnings].join("；") || "-",
+            formatQualityDetails(report),
             formatDate(report.created_at),
           ])}
         />
@@ -807,6 +964,42 @@ function formatDimensions(dimensions: Record<string, string>) {
   return Object.entries(dimensions)
     .map(([key, value]) => `${key}:${value}`)
     .join(" / ");
+}
+
+function formatSourceType(type: string) {
+  const labels: Record<string, string> = {
+    housing_price: "房价指数",
+    cpi: "居民消费价格 CPI",
+  };
+  return labels[type] ?? type;
+}
+
+function formatHealth(health: DataSourceHealth | undefined) {
+  if (!health) return "暂无任务";
+  const status = health.latest_job_status ?? "暂无任务";
+  const successRate = `${Math.round(health.success_rate * 100)}%`;
+  const error = health.latest_error_type ? ` / ${health.latest_error_type}` : "";
+  return `最近 ${status} / 成功率 ${successRate}${error}`;
+}
+
+function formatQualityDetails(report: QualityReport) {
+  if (report.details.length) {
+    return report.details
+      .slice(0, 3)
+      .map((detail) => {
+        const scope = [
+          detail.indicator,
+          detail.region,
+          detail.period,
+          detail.dimensions ? JSON.stringify(detail.dimensions) : "",
+        ]
+          .filter(Boolean)
+          .join(" / ");
+        return `${detail.severity}:${detail.rule} ${scope || detail.message}`;
+      })
+      .join("；");
+  }
+  return [...report.errors, ...report.warnings].join("；") || "-";
 }
 
 function buildQuery(params: Record<string, string>) {

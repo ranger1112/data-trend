@@ -1,0 +1,30 @@
+<view class="page">
+  <view class="header">
+    <text class="eyebrow">ranking</text>
+    <text class="title">排行榜</text>
+    <text class="subtitle">{{currentIndicator.name || '指标排行'}}</text>
+  </view>
+
+  <view class="toolbar">
+    <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
+      <view class="select">{{currentIndicator.name || '选择指标'}}</view>
+    </picker>
+    <view class="navGrid">
+      <button data-mode="top" bindtap="switchMode">靠前</button>
+      <button data-mode="bottom" bindtap="switchMode">靠后</button>
+    </view>
+  </view>
+
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view class="panel">
+    <text class="panelTitle">{{mode === 'top' ? '靠前' : '靠后'}}</text>
+    <block wx:for="{{mode === 'top' ? rankings.top : rankings.bottom}}" wx:key="region">
+      <view class="row">
+        <text class="primary">{{item.region}}</text>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
+    <view wx:if="{{loading}}" class="empty">加载中...</view>
+    <view wx:if="{{!loading && (mode === 'top' ? rankings.top.length : rankings.bottom.length) === 0}}" class="empty">暂无排行数据</view>
+  </view>
+</view>

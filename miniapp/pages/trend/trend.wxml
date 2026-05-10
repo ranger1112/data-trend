@@ -1,0 +1,32 @@
+<view class="page">
+  <view class="header">
+    <text class="eyebrow">trend</text>
+    <text class="title">趋势分析</text>
+    <text class="subtitle">{{currentRegion.name || '城市'}} / {{currentIndicator.name || '指标'}}</text>
+  </view>
+
+  <view class="toolbar">
+    <picker mode="selector" range="{{regions}}" range-key="name" bindchange="onRegionChange">
+      <view class="select">{{currentRegion.name || '选择城市'}}</view>
+    </picker>
+    <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
+      <view class="select">{{currentIndicator.name || '选择指标'}}</view>
+    </picker>
+  </view>
+
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view class="panel">
+    <text class="panelTitle">时间序列</text>
+    <block wx:for="{{trend}}" wx:key="period">
+      <view class="row">
+        <text>{{item.period}}</text>
+        <view class="barTrack">
+          <view class="bar" style="width: {{item.value > 100 ? item.value - 80 : 30}}%;"></view>
+        </view>
+        <text class="value">{{item.value}}</text>
+      </view>
+    </block>
+    <view wx:if="{{trend.length === 0 && !loading}}" class="empty">暂无趋势数据</view>
+    <view wx:if="{{loading}}" class="empty">加载中...</view>
+  </view>
+</view>

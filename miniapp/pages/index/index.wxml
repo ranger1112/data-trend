@@ -39,6 +39,12 @@
     <button class="favoriteBtn" bindtap="toggleFavoriteCity">收藏城市</button>
   </view>
 
+  <view class="navGrid">
+    <button bindtap="goCityDetail">城市详情</button>
+    <button bindtap="goTrendPage">趋势分析</button>
+    <button bindtap="goRankingPage">排行榜</button>
+  </view>
+
   <view wx:if="{{favoriteCities.length > 0}}" class="panel">
     <text class="panelTitle">常看城市</text>
     <view class="chips">

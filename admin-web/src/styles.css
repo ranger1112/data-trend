@@ -131,6 +131,26 @@ input[type="checkbox"] {
   padding: 12px 14px;
 }
 
+.loginPanel {
+  background: white;
+  border: 1px solid #dce3eb;
+  border-radius: 8px;
+  margin: 12vh auto 0;
+  max-width: 420px;
+  padding: 24px;
+}
+
+.loginPanel h1 {
+  font-size: 24px;
+  margin-bottom: 18px;
+}
+
+.roleTag {
+  color: #607086;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .metrics {
   display: grid;
   gap: 14px;
@@ -247,6 +267,11 @@ input[type="checkbox"] {
   grid-template-columns: 1fr 1fr;
 }
 
+.presetActions {
+  display: flex;
+  gap: 10px;
+}
+
 .list {
   display: grid;
   gap: 10px;
@@ -266,6 +291,13 @@ input[type="checkbox"] {
 .listItem strong,
 .listItem span {
   display: block;
+}
+
+.listItem small {
+  color: #7a8798;
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
 }
 
 .listItem span {

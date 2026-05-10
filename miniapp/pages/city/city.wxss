@@ -1,0 +1,16 @@
+@import "../index/index.wxss";
+
+.trendLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 18rpx;
+}
+
+.trendDot {
+  background: #edf5ff;
+  border-radius: 10rpx;
+  color: #145db8;
+  font-size: 22rpx;
+  padding: 8rpx 10rpx;
+}

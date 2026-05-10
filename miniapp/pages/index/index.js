@@ -31,32 +31,39 @@ Page({
   },
 
   onLoad() {
-    this.loadPage();
+    return this.loadPage();
   },
 
   loadPage() {
     this.setData({ loading: true, error: "" });
-    Promise.all([
+    return Promise.all([
       this.request("/mini/dashboard/overview"),
       this.request("/mini/regions"),
-      this.request("/mini/indicators"),
-      this.loadLatestValues(),
-      this.loadRankings()
+      this.request("/mini/indicators")
     ])
-      .then(([overview, regions, indicators, latestValues, rankings]) => {
+      .then(([overview, regions, indicators]) => {
         const favoriteCities = wx.getStorageSync("favoriteCities") || [];
+        const currentRegion = regions[0] || {};
+        const currentIndicator = indicators[0] || {};
         this.setData({
           overview,
           regions,
           filteredRegions: regions,
           indicators,
-          latestValues,
-          rankings,
           favoriteCities,
-          currentRegion: regions[0] || {},
-          currentIndicator: indicators[0] || {}
+          currentRegion,
+          currentIndicator
         });
-        return this.loadTrend();
+        return Promise.all([
+          this.loadLatestValues(),
+          this.loadRankings(),
+          this.loadTrend()
+        ]).then(([latestValues, rankings]) => {
+          this.setData({
+            latestValues: latestValues.items || [],
+            rankings
+          });
+        });
       })
       .catch(() => {
         this.setData({ error: "数据加载失败，请稍后重试" });
@@ -113,7 +120,7 @@ Page({
     Promise.all([
       this.loadTrend(),
       this.loadLatestValues().then((latestValues) => {
-        this.setData({ latestValues });
+        this.setData({ latestValues: latestValues.items || [] });
       }),
       this.loadRankings().then((rankings) => {
         this.setData({ rankings });
@@ -137,7 +144,7 @@ Page({
     Promise.all([
       this.loadTrend(),
       this.loadLatestValues().then((latestValues) => {
-        this.setData({ latestValues });
+        this.setData({ latestValues: latestValues.items || [] });
       }),
       this.loadRankings().then((rankings) => {
         this.setData({ rankings });
@@ -169,12 +176,38 @@ Page({
     this.setData({ favoriteCities });
   },
 
+  goCityDetail() {
+    if (!this.data.currentRegion.id) return;
+    wx.navigateTo({
+      url: `/pages/city/city?region_id=${this.data.currentRegion.id}&region_name=${encodeURIComponent(this.data.currentRegion.name)}`
+    });
+  },
+
+  goTrendPage() {
+    wx.navigateTo({ url: "/pages/trend/trend" });
+  },
+
+  goRankingPage() {
+    wx.navigateTo({ url: "/pages/ranking/ranking" });
+  },
+
   request(path) {
+    const cached = wx.getStorageSync(`cache:${path}`);
+    if (cached && cached.expireAt > Date.now()) {
+      return Promise.resolve(cached.data);
+    }
     return new Promise((resolve, reject) => {
       wx.request({
         url: `${app.globalData.apiBase}${path}`,
         success: (res) => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
+            const ttl = res.data && res.data.cache_ttl_seconds;
+            if (ttl) {
+              wx.setStorageSync(`cache:${path}`, {
+                data: res.data,
+                expireAt: Date.now() + ttl * 1000
+              });
+            }
             resolve(res.data);
           } else {
             reject(new Error(`HTTP ${res.statusCode}`));

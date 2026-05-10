@@ -1,0 +1,29 @@
+<view class="page">
+  <view class="header">
+    <text class="eyebrow">city</text>
+    <text class="title">{{regionName}}</text>
+    <text class="subtitle">指标详情与最近趋势</text>
+  </view>
+
+  <view wx:if="{{error}}" class="error">{{error}}</view>
+  <view wx:if="{{loading}}" class="empty">加载中...</view>
+
+  <block wx:for="{{cards}}" wx:key="indicator.code">
+    <view class="panel">
+      <text class="panelTitle">{{item.indicator.name}}</text>
+      <view class="row">
+        <text>最新值</text>
+        <text class="value">{{item.latest ? item.latest.value : '-'}}</text>
+      </view>
+      <view class="row">
+        <text>最新周期</text>
+        <text>{{item.latest ? item.latest.period : '-'}}</text>
+      </view>
+      <view class="trendLine">
+        <text wx:for="{{item.points}}" wx:key="period" class="trendDot">{{item.value}}</text>
+      </view>
+    </view>
+  </block>
+
+  <view wx:if="{{cards.length === 0 && !loading}}" class="empty">暂无城市指标数据</view>
+</view>
