@@ -55,12 +55,22 @@ type DataSourceHealth = {
 type Region = {
   id: number;
   name: string;
+  level: string;
+  parent_id: number | null;
 };
 
 type Indicator = {
   id: number;
   code: string;
   name: string;
+  display_name: string | null;
+  category: string;
+  unit: string | null;
+  description: string | null;
+  precision: number;
+  sort_order: number;
+  default_dimensions: Record<string, string>;
+  miniapp_visible: boolean;
 };
 
 type CrawlJob = {
@@ -139,6 +149,37 @@ type QualityReport = {
   created_at: string;
 };
 
+type DataSourceDetail = {
+  data_source: DataSource;
+  health: DataSourceHealth | null;
+  recent_jobs: CrawlJob[];
+  schedules: Schedule[];
+  quality_reports: QualityReport[];
+  available_actions: string[];
+};
+
+type CrawlJobDetail = {
+  job: CrawlJob;
+  data_source: DataSource | null;
+  schedule: Schedule | null;
+  quality_reports: QualityReport[];
+  duration_seconds: number | null;
+  retry_available: boolean;
+};
+
+type QualityReportDetail = QualityReport & {
+  error_details: QualityReport["details"];
+  warning_details: QualityReport["details"];
+  suggested_actions: string[];
+};
+
+type AppConfig = {
+  key: string;
+  value: Record<string, unknown>;
+  description: string | null;
+  updated_at: string;
+};
+
 type PublishBatch = {
   id: number;
   action: string;
@@ -182,6 +223,7 @@ function App() {
   const [jobs, setJobs] = useState<CrawlJob[]>([]);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [qualityReports, setQualityReports] = useState<QualityReport[]>([]);
+  const [configs, setConfigs] = useState<AppConfig[]>([]);
   const [publishBatches, setPublishBatches] = useState<PublishBatch[]>([]);
   const [opsSummary, setOpsSummary] = useState<OpsSummary | null>(null);
   const [records, setRecords] = useState<CrawlRecord[]>([]);
@@ -206,6 +248,7 @@ function App() {
   const [statPeriod, setStatPeriod] = useState("");
   const [statHouseType, setStatHouseType] = useState("");
   const [statAreaType, setStatAreaType] = useState("");
+  const [statDataSourceId, setStatDataSourceId] = useState("");
   const [scheduleName, setScheduleName] = useState("每日房价抓取");
   const [scheduleUrl, setScheduleUrl] = useState(DEFAULT_URL);
   const [scheduleInterval, setScheduleInterval] = useState("1440");
@@ -220,6 +263,11 @@ function App() {
     return raw ? JSON.parse(raw) : null;
   });
   const [loginForm, setLoginForm] = useState({ username: "admin", password: "admin" });
+  const [sourceDetail, setSourceDetail] = useState<DataSourceDetail | null>(null);
+  const [jobDetail, setJobDetail] = useState<CrawlJobDetail | null>(null);
+  const [qualityDetail, setQualityDetail] = useState<QualityReportDetail | null>(null);
+  const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({});
+  const [indicatorDrafts, setIndicatorDrafts] = useState<Record<string, Partial<Indicator>>>({});
 
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const response = await fetch(`${API_BASE}${path}`, {
@@ -273,6 +321,7 @@ function App() {
       statValuesRes,
       schedulesRes,
       reportsRes,
+      configsRes,
       batchesRes,
       opsSummaryRes,
     ] = await Promise.all([
@@ -299,10 +348,12 @@ function App() {
           period: statPeriod,
           house_type: statHouseType,
           area_type: statAreaType,
+          data_source_id: statDataSourceId,
         })}`,
       ),
       request<Schedule[]>("/admin/schedules"),
       request<QualityReport[]>("/admin/quality-reports"),
+      request<AppConfig[]>("/admin/configs"),
       request<PublishBatch[]>("/admin/publish-batches"),
       request<OpsSummary>("/admin/ops/summary"),
     ]);
@@ -317,6 +368,14 @@ function App() {
     setStatValues(statValuesRes);
     setSchedules(schedulesRes);
     setQualityReports(reportsRes);
+    setConfigs(configsRes);
+    setConfigDrafts((drafts) => {
+      const next = { ...drafts };
+      configsRes.forEach((config) => {
+        if (!next[config.key]) next[config.key] = JSON.stringify(config.value, null, 2);
+      });
+      return next;
+    });
     setPublishBatches(batchesRes);
     setOpsSummary(opsSummaryRes);
     setSelectedStatIds((ids) => ids.filter((id) => statValuesRes.some((value) => value.id === id)));
@@ -343,6 +402,47 @@ function App() {
       method: "PATCH",
       body: JSON.stringify({ enabled: !source.enabled }),
     });
+    await refresh();
+  }
+
+  async function loadSourceDetail(id: number) {
+    const detail = await request<DataSourceDetail>(`/admin/data-sources/${id}/detail`);
+    setSourceDetail(detail);
+  }
+
+  async function loadJobDetail(id: number) {
+    const detail = await request<CrawlJobDetail>(`/admin/crawl-jobs/${id}/detail`);
+    setJobDetail(detail);
+  }
+
+  async function loadQualityDetail(id: number) {
+    const detail = await request<QualityReportDetail>(`/admin/quality-reports/${id}`);
+    setQualityDetail(detail);
+  }
+
+  async function saveConfig(config: AppConfig) {
+    let value: Record<string, unknown>;
+    try {
+      value = JSON.parse(configDrafts[config.key] ?? "{}");
+    } catch {
+      setMessage(`${config.key} 不是合法 JSON`);
+      return;
+    }
+    await request<AppConfig>(`/admin/configs/${config.key}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value, description: config.description }),
+    });
+    setMessage("配置已保存");
+    await refresh();
+  }
+
+  async function saveIndicator(indicator: Indicator) {
+    const draft = indicatorDrafts[indicator.code] || {};
+    await request<Indicator>(`/admin/indicators/${indicator.code}`, {
+      method: "PATCH",
+      body: JSON.stringify(draft),
+    });
+    setMessage("指标配置已保存");
     await refresh();
   }
 
@@ -466,7 +566,7 @@ function App() {
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod, statHouseType, statAreaType]);
+  }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod, statHouseType, statAreaType, statDataSourceId]);
 
   if (!auth) {
     return (
@@ -631,9 +731,14 @@ function App() {
                     {formatHealth(healthBySourceId.get(source.id))}
                   </small>
                 </div>
-                <button className="secondary" onClick={() => toggleDataSource(source)}>
-                  {source.enabled ? "启用" : "停用"}
-                </button>
+                <div className="actions">
+                  <button className="secondary" onClick={() => loadSourceDetail(source.id)}>
+                    详情
+                  </button>
+                  <button className="secondary" onClick={() => toggleDataSource(source)}>
+                    {source.enabled ? "停用" : "启用"}
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -642,7 +747,7 @@ function App() {
         <article className="panel">
           <h2>触发采集</h2>
           <div className="formGrid">
-            <select value={selectedSourceId} onChange={(event) => setSelectedSourceId(event.target.value)}>
+            <select value={statDataSourceId} onChange={(event) => setStatDataSourceId(event.target.value)}>
               <option value="">临时 URL</option>
               {dataSources.map((source) => (
                 <option key={source.id} value={source.id}>
@@ -721,6 +826,9 @@ function App() {
             formatDate(job.started_at),
             job.error_type ? `${job.error_type}: ${job.error_message ?? ""}` : (job.error_message ?? "-"),
             <div className="actions">
+              <button className="secondary" onClick={() => loadJobDetail(job.id)}>
+                详情
+              </button>
               {job.status === "failed" && (
                 <button className="secondary" onClick={() => retryJob(job.id)}>
                   重试
@@ -748,10 +856,62 @@ function App() {
             `${report.actual_regions}/${report.expected_regions}`,
             report.checked_values,
             formatQualityDetails(report),
+            <button className="secondary" onClick={() => loadQualityDetail(report.id)}>
+              查看详情
+            </button>,
             formatDate(report.created_at),
           ])}
         />
       </section>
+
+      {(sourceDetail || jobDetail || qualityDetail) && (
+        <section className="panel detailGrid">
+          {sourceDetail && (
+            <DetailPanel title={`数据源详情 #${sourceDetail.data_source.id}`} onClose={() => setSourceDetail(null)}>
+              <KeyValue label="名称" value={sourceDetail.data_source.name} />
+              <KeyValue label="类型" value={formatSourceType(sourceDetail.data_source.type)} />
+              <KeyValue label="入口" value={sourceDetail.data_source.entry_url} />
+              <KeyValue label="健康" value={formatHealth(sourceDetail.health ?? undefined)} />
+              <KeyValue label="可操作" value={sourceDetail.available_actions.join(" / ")} />
+              <strong>最近任务</strong>
+              <ul className="compactList">
+                {sourceDetail.recent_jobs.map((job) => (
+                  <li key={job.id}>#{job.id} {job.status} / {formatDate(job.finished_at)}</li>
+                ))}
+              </ul>
+            </DetailPanel>
+          )}
+          {jobDetail && (
+            <DetailPanel title={`任务详情 #${jobDetail.job.id}`} onClose={() => setJobDetail(null)}>
+              <KeyValue label="状态" value={jobDetail.job.status} />
+              <KeyValue label="数据源" value={jobDetail.data_source?.name ?? "-"} />
+              <KeyValue label="耗时" value={jobDetail.duration_seconds === null ? "-" : `${jobDetail.duration_seconds}s`} />
+              <KeyValue label="锁" value={jobDetail.job.locked_by ? `${jobDetail.job.locked_by} / ${formatDate(jobDetail.job.locked_at)}` : "-"} />
+              <KeyValue label="重试" value={`${jobDetail.job.retry_count}/${jobDetail.job.max_retries}`} />
+              <KeyValue label="导入" value={`${jobDetail.job.imported_records}/${jobDetail.job.total_records}`} />
+              <KeyValue label="错误" value={jobDetail.job.error_type ? `${jobDetail.job.error_type}: ${jobDetail.job.error_message ?? ""}` : "-"} />
+            </DetailPanel>
+          )}
+          {qualityDetail && (
+            <DetailPanel title={`质量报告 #${qualityDetail.id}`} onClose={() => setQualityDetail(null)}>
+              <KeyValue label="状态" value={qualityDetail.status} />
+              <KeyValue label="建议" value={qualityDetail.suggested_actions.join(" / ")} />
+              <strong>Errors</strong>
+              <ul className="compactList">
+                {qualityDetail.error_details.map((detail, index) => (
+                  <li key={index}>{detail.rule} / {detail.indicator ?? "-"} / {detail.region ?? "-"} / {detail.period ?? "-"}</li>
+                ))}
+              </ul>
+              <strong>Warnings</strong>
+              <ul className="compactList">
+                {qualityDetail.warning_details.map((detail, index) => (
+                  <li key={index}>{detail.rule} / {detail.message}</li>
+                ))}
+              </ul>
+            </DetailPanel>
+          )}
+        </section>
+      )}
 
       <section className="panel">
         <div className="panelHead">
@@ -810,6 +970,14 @@ function App() {
               {indicators.map((indicator) => (
                 <option key={indicator.code} value={indicator.code}>
                   {indicator.name}
+                </option>
+              ))}
+            </select>
+            <select value={selectedSourceId} onChange={(event) => setSelectedSourceId(event.target.value)}>
+              <option value="">全部数据源</option>
+              {dataSources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.name}
                 </option>
               ))}
             </select>
@@ -882,6 +1050,69 @@ function App() {
       </section>
 
       <section className="panel">
+        <h2>指标展示配置</h2>
+        <DataTable
+          headers={["指标", "分类", "展示名", "单位", "排序", "小程序", "操作"]}
+          rows={indicators.map((indicator) => {
+            const draft = indicatorDrafts[indicator.code] || {};
+            return [
+              indicator.code,
+              <input
+                value={(draft.category as string | undefined) ?? indicator.category}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, category: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.display_name as string | undefined) ?? indicator.display_name ?? indicator.name}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, display_name: event.target.value },
+                  })
+                }
+              />,
+              <input
+                value={(draft.unit as string | undefined) ?? indicator.unit ?? ""}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, unit: event.target.value },
+                  })
+                }
+              />,
+              <input
+                type="number"
+                value={(draft.sort_order as number | undefined) ?? indicator.sort_order}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, sort_order: Number(event.target.value) },
+                  })
+                }
+              />,
+              <input
+                type="checkbox"
+                checked={(draft.miniapp_visible as boolean | undefined) ?? indicator.miniapp_visible}
+                onChange={(event) =>
+                  setIndicatorDrafts({
+                    ...indicatorDrafts,
+                    [indicator.code]: { ...draft, miniapp_visible: event.target.checked },
+                  })
+                }
+              />,
+              <button className="secondary" onClick={() => saveIndicator(indicator)}>
+                保存
+              </button>,
+            ];
+          })}
+        />
+      </section>
+
+      <section className="panel">
         <h2>发布批次</h2>
         <DataTable
           headers={["ID", "动作", "数量", "原因", "时间"]}
@@ -893,6 +1124,29 @@ function App() {
             formatDate(batch.created_at),
           ])}
         />
+      </section>
+
+      <section className="panel">
+        <h2>运营配置</h2>
+        <div className="configGrid">
+          {configs.map((config) => (
+            <article className="configItem" key={config.key}>
+              <div className="panelHead">
+                <div>
+                  <strong>{config.key}</strong>
+                  <span>{config.description ?? "配置项"}</span>
+                </div>
+                <button className="secondary" onClick={() => saveConfig(config)}>
+                  保存
+                </button>
+              </div>
+              <textarea
+                value={configDrafts[config.key] ?? ""}
+                onChange={(event) => setConfigDrafts({ ...configDrafts, [config.key]: event.target.value })}
+              />
+            </article>
+          ))}
+        </div>
       </section>
     </main>
   );
@@ -952,6 +1206,35 @@ function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function DetailPanel({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <article className="detailPanel">
+      <div className="panelHead">
+        <h2>{title}</h2>
+        <button className="secondary" onClick={onClose}>关闭</button>
+      </div>
+      <div className="detailBody">{children}</div>
+    </article>
+  );
+}
+
+function KeyValue({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="keyValue">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }

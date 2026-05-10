@@ -106,7 +106,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   background: white;
   border: 1px solid #c9d4e2;
   border-radius: 7px;
@@ -114,6 +115,13 @@ select {
   min-height: 40px;
   padding: 0 11px;
   width: 100%;
+}
+
+textarea {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  min-height: 180px;
+  padding: 12px;
+  resize: vertical;
 }
 
 input[type="checkbox"] {
@@ -169,6 +177,13 @@ input[type="checkbox"] {
   display: grid;
   gap: 18px;
   grid-template-columns: minmax(0, 1.3fr) minmax(360px, 0.7fr);
+}
+
+.detailGrid,
+.configGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .metric,
@@ -250,6 +265,46 @@ input[type="checkbox"] {
 .panel {
   margin-top: 18px;
   padding: 18px;
+}
+
+.detailPanel,
+.configItem {
+  border: 1px solid #edf1f5;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.detailBody {
+  display: grid;
+  gap: 10px;
+}
+
+.keyValue {
+  border-bottom: 1px solid #edf1f5;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 110px minmax(0, 1fr);
+  padding-bottom: 8px;
+}
+
+.keyValue span,
+.configItem span {
+  color: #65758b;
+  font-size: 13px;
+}
+
+.keyValue strong {
+  overflow-wrap: anywhere;
+}
+
+.compactList {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.compactList li {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
 }
 
 .grid .panel {
@@ -347,6 +402,8 @@ td {
   .metrics,
   .opsStrip,
   .grid,
+  .detailGrid,
+  .configGrid,
   .inlineFields {
     grid-template-columns: 1fr;
   }
