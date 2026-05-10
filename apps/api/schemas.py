@@ -31,6 +31,40 @@ class DataSourceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DataSourceHealthOut(BaseModel):
+    id: int
+    name: str
+    type: str
+    enabled: bool
+    entry_url: str
+    latest_job_status: str | None
+    latest_job_finished_at: datetime | None
+    latest_error_type: str | None
+    latest_error_message: str | None
+    total_jobs: int
+    success_jobs: int
+    failed_jobs: int
+    success_rate: float
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    username: str
+    role: str
+
+
+class MeResponse(BaseModel):
+    username: str
+    role: str
+
+
 class CrawlJobCreate(BaseModel):
     data_source_id: int | None = None
     url: HttpUrl | None = None
@@ -45,6 +79,11 @@ class CrawlJobOut(BaseModel):
     status: str
     trigger: str
     retry_count: int
+    max_retries: int
+    next_retry_at: datetime | None
+    timeout_seconds: int
+    locked_at: datetime | None
+    locked_by: str | None
     total_records: int
     imported_records: int
     skipped_records: int
@@ -113,6 +152,7 @@ class QualityReportOut(BaseModel):
     checked_values: int
     errors: list[str]
     warnings: list[str]
+    details: list[dict[str, Any]]
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -166,7 +206,60 @@ class TrendPoint(BaseModel):
     dimensions: dict[str, Any]
 
 
+class RegionOut(BaseModel):
+    id: int
+    name: str
+    normalized_name: str
+    level: str
+
+    model_config = {"from_attributes": True}
+
+
+class IndicatorOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    unit: str | None
+    description: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class LatestValueOut(BaseModel):
+    region_id: int
+    region: str
+    period: date
+    value: float
+    dimensions: dict[str, Any]
+
+
+class LatestValuesResponse(BaseModel):
+    items: list[LatestValueOut]
+    latest_period: date | None
+    updated_at: datetime | None
+    cache_ttl_seconds: int
+
+
+class RankingsResponse(BaseModel):
+    top: list[LatestValueOut]
+    bottom: list[LatestValueOut]
+    latest_period: date | None
+    updated_at: datetime | None
+    cache_ttl_seconds: int
+
+
+class DashboardOverviewOut(BaseModel):
+    regions: int
+    indicators: int
+    published_values: int
+    latest_period: date | None
+    updated_at: datetime | None
+    cache_ttl_seconds: int
+
+
 class TrendResponse(BaseModel):
     region_id: int
     indicator_code: str
     items: list[TrendPoint]
+    updated_at: datetime | None = None
+    cache_ttl_seconds: int = 300

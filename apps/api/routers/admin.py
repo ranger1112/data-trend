@@ -11,6 +11,7 @@ from apps.api.schemas import (
     CrawlJobCreate,
     CrawlJobOut,
     DataSourceCreate,
+    DataSourceHealthOut,
     DataSourceOut,
     OpsSummaryOut,
     DataSourcePatch,
@@ -23,15 +24,23 @@ from apps.api.schemas import (
     StatValuePatch,
     StatValuePublishRequest,
 )
-from packages.crawler.housing_price.importer import HousingPriceImportRunner
+from apps.api.security import require_role
+from packages.crawler.cpi import importer as _cpi_importer
+from packages.crawler.housing_price import importer as _housing_price_importer
+from packages.pipeline.importers import UnsupportedDataSourceType, get_import_runner, list_importer_types
 from packages.pipeline.scheduler import create_due_jobs
 from packages.storage import repositories as repo
 
 router = APIRouter()
+_ = (_housing_price_importer, _cpi_importer)
 
 
 @router.post("/data-sources", response_model=DataSourceOut)
-def create_data_source(payload: DataSourceCreate, db: Session = Depends(get_db)):
+def create_data_source(
+    payload: DataSourceCreate,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
     return repo.create_data_source(
         db,
         name=payload.name,
@@ -43,8 +52,18 @@ def create_data_source(payload: DataSourceCreate, db: Session = Depends(get_db))
 
 
 @router.get("/data-sources", response_model=list[DataSourceOut])
-def list_data_sources(db: Session = Depends(get_db)):
+def list_data_sources(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.list_data_sources(db)
+
+
+@router.get("/data-source-types", response_model=list[str])
+def list_data_source_types(_principal=Depends(require_role("readonly"))):
+    return list_importer_types()
+
+
+@router.get("/data-sources/health", response_model=list[DataSourceHealthOut])
+def list_data_source_health(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
+    return repo.list_data_source_health(db)
 
 
 @router.patch("/data-sources/{data_source_id}", response_model=DataSourceOut)
@@ -52,6 +71,7 @@ def patch_data_source(
     data_source_id: int,
     payload: DataSourcePatch,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
 ):
     data_source = repo.get_data_source(db, data_source_id)
     if not data_source:
@@ -72,6 +92,7 @@ def create_crawl_job(
     payload: CrawlJobCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
 ):
     if not payload.data_source_id and not payload.url:
         raise HTTPException(status_code=422, detail="data_source_id or url is required")
@@ -91,6 +112,8 @@ def create_crawl_job(
         db,
         data_source_id=data_source.id if data_source else None,
         target_url=target_url,
+        max_retries=get_settings().crawl_job_max_retries,
+        timeout_seconds=get_settings().crawl_job_timeout_seconds,
     )
     if payload.run_now:
         background_tasks.add_task(run_crawl_job, job.id, target_url, data_source.id if data_source else None)
@@ -102,12 +125,18 @@ def list_crawl_jobs(
     status: str | None = Query(default=None, pattern="^(pending|running|success|failed|cancelled)$"),
     data_source_id: int | None = None,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
 ):
     return repo.list_crawl_jobs(db, status=status, data_source_id=data_source_id)
 
 
 @router.post("/crawl-jobs/{job_id}/retry", response_model=CrawlJobOut)
-def retry_crawl_job(job_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def retry_crawl_job(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
     job = db.get(repo.CrawlJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="crawl job not found")
@@ -119,7 +148,11 @@ def retry_crawl_job(job_id: int, background_tasks: BackgroundTasks, db: Session 
 
 
 @router.post("/crawl-jobs/{job_id}/cancel", response_model=CrawlJobOut)
-def cancel_crawl_job(job_id: int, db: Session = Depends(get_db)):
+def cancel_crawl_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
     job = db.get(repo.CrawlJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="crawl job not found")
@@ -127,7 +160,11 @@ def cancel_crawl_job(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/schedules", response_model=ScheduleOut)
-def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)):
+def create_schedule(
+    payload: ScheduleCreate,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
     if payload.data_source_id and not repo.get_data_source(db, payload.data_source_id):
         raise HTTPException(status_code=404, detail="data source not found")
     return repo.create_schedule(
@@ -142,12 +179,17 @@ def create_schedule(payload: ScheduleCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/schedules", response_model=list[ScheduleOut])
-def list_schedules(db: Session = Depends(get_db)):
+def list_schedules(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.list_schedules(db)
 
 
 @router.patch("/schedules/{schedule_id}", response_model=ScheduleOut)
-def patch_schedule(schedule_id: int, payload: SchedulePatch, db: Session = Depends(get_db)):
+def patch_schedule(
+    schedule_id: int,
+    payload: SchedulePatch,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("operator")),
+):
     schedule = repo.get_schedule(db, schedule_id)
     if not schedule:
         raise HTTPException(status_code=404, detail="schedule not found")
@@ -163,7 +205,7 @@ def patch_schedule(schedule_id: int, payload: SchedulePatch, db: Session = Depen
 
 
 @router.post("/schedules/run-due", response_model=list[CrawlJobOut])
-def run_due_schedules(db: Session = Depends(get_db)):
+def run_due_schedules(db: Session = Depends(get_db), _principal=Depends(require_role("operator"))):
     return create_due_jobs(db)
 
 
@@ -174,6 +216,7 @@ def list_crawl_records(
     published_from: date | None = None,
     published_to: date | None = None,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
 ):
     return repo.list_crawl_records(
         db,
@@ -193,6 +236,7 @@ def list_stat_values(
     house_type: str | None = None,
     area_type: str | None = None,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
 ):
     values = repo.list_stat_values(
         db,
@@ -214,6 +258,7 @@ def list_review_items(
     house_type: str | None = None,
     area_type: str | None = None,
     db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
 ):
     values = repo.list_stat_values(
         db,
@@ -228,7 +273,12 @@ def list_review_items(
 
 
 @router.patch("/stat-values/{stat_value_id}")
-def patch_stat_value(stat_value_id: int, payload: StatValuePatch, db: Session = Depends(get_db)):
+def patch_stat_value(
+    stat_value_id: int,
+    payload: StatValuePatch,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
+):
     stat_value = repo.get_stat_value(db, stat_value_id)
     if not stat_value:
         raise HTTPException(status_code=404, detail="stat value not found")
@@ -244,54 +294,70 @@ def patch_stat_value(stat_value_id: int, payload: StatValuePatch, db: Session = 
 
 
 @router.post("/stat-values/publish")
-def publish_stat_values(payload: StatValuePublishRequest, db: Session = Depends(get_db)):
+def publish_stat_values(
+    payload: StatValuePublishRequest,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
+):
     count = repo.publish_stat_values(db, payload.ids)
     return {"published": count}
 
 
 @router.post("/publish-batches")
-def publish_batch(db: Session = Depends(get_db)):
+def publish_batch(db: Session = Depends(get_db), _principal=Depends(require_role("reviewer"))):
     count = repo.publish_draft_values(db)
     return {"published": count}
 
 
 @router.get("/publish-batches", response_model=list[PublishBatchOut])
-def list_publish_batches(db: Session = Depends(get_db)):
+def list_publish_batches(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.list_publish_batches(db)
 
 
 @router.post("/review-batches/publish")
-def publish_review_batch(payload: StatValuePublishRequest, db: Session = Depends(get_db)):
+def publish_review_batch(
+    payload: StatValuePublishRequest,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
+):
     return {"published": repo.publish_stat_values(db, payload.ids)}
 
 
 @router.post("/review-batches/reject")
-def reject_review_batch(payload: StatValuePublishRequest, db: Session = Depends(get_db)):
+def reject_review_batch(
+    payload: StatValuePublishRequest,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("reviewer")),
+):
     return {"rejected": repo.reject_stat_values(db, payload.ids, reason=payload.reason)}
 
 
 @router.get("/quality-reports", response_model=list[QualityReportOut])
-def list_quality_reports(db: Session = Depends(get_db)):
+def list_quality_reports(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.list_quality_reports(db)
 
 
 @router.get("/stat-value-changes", response_model=list[StatValueChangeOut])
-def list_stat_value_changes(stat_value_id: int | None = None, db: Session = Depends(get_db)):
+def list_stat_value_changes(
+    stat_value_id: int | None = None,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
     return repo.list_stat_value_changes(db, stat_value_id=stat_value_id)
 
 
 @router.get("/ops/summary", response_model=OpsSummaryOut)
-def get_ops_summary(db: Session = Depends(get_db)):
+def get_ops_summary(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.get_ops_summary(db)
 
 
 @router.get("/ops/recent-failures", response_model=list[CrawlJobOut])
-def get_recent_failures(db: Session = Depends(get_db)):
+def get_recent_failures(db: Session = Depends(get_db), _principal=Depends(require_role("readonly"))):
     return repo.get_recent_failed_jobs(db)
 
 
 @router.post("/ops/test-alert", response_model=AlertTestOut)
-def test_alert():
+def test_alert(_principal=Depends(require_role("operator"))):
     configured = get_settings().alert_webhook_url is not None
     return {
         "configured": configured,
@@ -305,5 +371,18 @@ def run_crawl_job(job_id: int, url: str, data_source_id: int | None) -> None:
         data_source = db.get(repo.DataSource, data_source_id) if data_source_id else None
         if not job:
             return
-        runner = HousingPriceImportRunner(db)
-        runner.run(url=url, job=job, data_source=data_source)
+        source_type = data_source.type if data_source else "housing_price"
+        locked = repo.lock_crawl_job(db, job, worker_id="api-background")
+        if locked is None:
+            return
+        try:
+            runner = get_import_runner(source_type, db)
+            runner.run(url=url, job=locked, data_source=data_source)
+        except UnsupportedDataSourceType as exc:
+            repo.mark_job_finished(
+                db,
+                locked,
+                status="failed",
+                error_type="unsupported_data_source_type",
+                error_message=str(exc),
+            )

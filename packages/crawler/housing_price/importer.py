@@ -8,6 +8,7 @@ from packages.crawler.housing_price.list_crawler import GovStatsListParser
 from packages.crawler.housing_price.parser import HousingPriceHtmlParser
 from packages.crawler.http import HtmlFetcher
 from packages.pipeline.quality import QualityChecker
+from packages.pipeline.importers import register_importer
 from packages.storage import repositories as repo
 from packages.storage.models import CrawlJob, DataSource
 
@@ -83,7 +84,8 @@ class HousingPriceImportRunner:
             data_source_id=data_source.id if data_source else None,
             target_url=url,
         )
-        repo.mark_job_running(self.db, job)
+        if job.status != "running":
+            repo.mark_job_running(self.db, job)
         try:
             html = self.fetcher.fetch(url)
             articles = self.list_parser.parse(html, url)
@@ -135,3 +137,6 @@ class HousingPriceImportRunner:
         if isinstance(exc, ValueError) and "no housing price records" in str(exc):
             return "no_records"
         return "import_error"
+
+
+register_importer("housing_price", HousingPriceImportRunner)

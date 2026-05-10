@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.bootstrap import bootstrap_database
 from apps.api.config import get_settings
-from apps.api.routers import admin, mini
+from apps.api.routers import admin, auth, mini
 
 
 settings = get_settings()
@@ -20,6 +20,7 @@ app.add_middleware(
 )
 
 app.include_router(admin.router, prefix="/admin", tags=["admin"])
+app.include_router(auth.router, prefix="/admin/auth", tags=["auth"])
 app.include_router(mini.router, prefix="/mini", tags=["mini"])
 
 

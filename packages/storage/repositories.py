@@ -58,6 +58,40 @@ def list_data_sources(db: Session) -> list[DataSource]:
     return list(db.scalars(select(DataSource).order_by(DataSource.id.desc())))
 
 
+def list_data_source_health(db: Session) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for data_source in list_data_sources(db):
+        jobs = list(
+            db.scalars(
+                select(CrawlJob)
+                .where(CrawlJob.data_source_id == data_source.id)
+                .order_by(CrawlJob.id.desc())
+            )
+        )
+        latest = jobs[0] if jobs else None
+        total_jobs = len(jobs)
+        success_jobs = len([job for job in jobs if job.status == "success"])
+        failed_jobs = len([job for job in jobs if job.status == "failed"])
+        items.append(
+            {
+                "id": data_source.id,
+                "name": data_source.name,
+                "type": data_source.type,
+                "enabled": data_source.enabled,
+                "entry_url": data_source.entry_url,
+                "latest_job_status": latest.status if latest else None,
+                "latest_job_finished_at": latest.finished_at if latest else None,
+                "latest_error_type": latest.error_type if latest else None,
+                "latest_error_message": latest.error_message if latest else None,
+                "total_jobs": total_jobs,
+                "success_jobs": success_jobs,
+                "failed_jobs": failed_jobs,
+                "success_rate": round(success_jobs / total_jobs, 4) if total_jobs else 0,
+            }
+        )
+    return items
+
+
 def get_data_source(db: Session, data_source_id: int) -> DataSource | None:
     return db.get(DataSource, data_source_id)
 
@@ -93,12 +127,20 @@ def create_crawl_job(
     schedule_id: int | None = None,
     target_url: str | None = None,
     trigger: str = "manual",
+    retry_count: int = 0,
+    max_retries: int = 3,
+    timeout_seconds: int = 1800,
+    next_retry_at: datetime | None = None,
 ) -> CrawlJob:
     job = CrawlJob(
         data_source_id=data_source_id,
         schedule_id=schedule_id,
         target_url=target_url,
         trigger=trigger,
+        retry_count=retry_count,
+        max_retries=max_retries,
+        timeout_seconds=timeout_seconds,
+        next_retry_at=next_retry_at,
     )
     db.add(job)
     db.commit()
@@ -106,9 +148,29 @@ def create_crawl_job(
     return job
 
 
-def mark_job_running(db: Session, job: CrawlJob) -> None:
+def lock_crawl_job(db: Session, job: CrawlJob, worker_id: str, now: datetime | None = None) -> CrawlJob | None:
+    now = now or datetime.utcnow()
+    db.refresh(job)
+    if job.status not in {"pending", "failed"}:
+        return None
+    if job.status == "failed" and job.next_retry_at is not None and job.next_retry_at > now:
+        return None
+    job.status = "running"
+    job.started_at = now
+    job.locked_at = now
+    job.locked_by = worker_id
+    job.error_type = None
+    job.error_message = None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def mark_job_running(db: Session, job: CrawlJob, worker_id: str | None = None) -> None:
     job.status = "running"
     job.started_at = datetime.utcnow()
+    job.locked_at = job.started_at
+    job.locked_by = worker_id
     job.error_type = None
     job.error_message = None
     db.commit()
@@ -135,9 +197,85 @@ def mark_job_finished(
     job.error_type = error_type
     job.error_message = error_message
     job.finished_at = finished_at or datetime.utcnow()
+    job.locked_at = None
+    job.locked_by = None
+    if status in {"success", "cancelled"}:
+        job.next_retry_at = None
     db.commit()
     db.refresh(job)
     return job
+
+
+def mark_job_retryable(
+    db: Session,
+    job: CrawlJob,
+    error_type: str | None,
+    error_message: str | None,
+    retry_delay_seconds: int = 300,
+    now: datetime | None = None,
+) -> CrawlJob:
+    now = now or datetime.utcnow()
+    job.status = "failed"
+    job.error_type = error_type
+    job.error_message = error_message
+    job.finished_at = now
+    job.locked_at = None
+    job.locked_by = None
+    job.next_retry_at = now + timedelta(seconds=retry_delay_seconds) if is_job_retryable(job) else None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def is_job_retryable(job: CrawlJob) -> bool:
+    return job.retry_count < job.max_retries and job.error_type in {
+        "network_error",
+        "timeout",
+        "import_error",
+        "worker_exception",
+    }
+
+
+def list_retryable_jobs(db: Session, now: datetime | None = None, limit: int = 20) -> list[CrawlJob]:
+    now = now or datetime.utcnow()
+    return list(
+        db.scalars(
+            select(CrawlJob)
+            .where(
+                CrawlJob.status == "failed",
+                CrawlJob.next_retry_at.is_not(None),
+                CrawlJob.next_retry_at <= now,
+                CrawlJob.retry_count < CrawlJob.max_retries,
+            )
+            .order_by(CrawlJob.next_retry_at, CrawlJob.id)
+            .limit(limit)
+        )
+    )
+
+
+def recover_stale_running_jobs(db: Session, now: datetime | None = None) -> list[CrawlJob]:
+    now = now or datetime.utcnow()
+    running_jobs = list(db.scalars(select(CrawlJob).where(CrawlJob.status == "running")))
+    recovered: list[CrawlJob] = []
+    for job in running_jobs:
+        locked_at = job.locked_at or job.started_at
+        if locked_at is None:
+            continue
+        if locked_at + timedelta(seconds=job.timeout_seconds) > now:
+            continue
+        job.status = "failed"
+        job.error_type = "timeout"
+        job.error_message = "job lock timed out"
+        job.finished_at = now
+        job.locked_at = None
+        job.locked_by = None
+        job.next_retry_at = now if job.retry_count < job.max_retries else None
+        recovered.append(job)
+    if recovered:
+        db.commit()
+        for job in recovered:
+            db.refresh(job)
+    return recovered
 
 
 def has_active_crawl_job(db: Session, data_source_id: int | None, target_url: str) -> bool:
@@ -260,6 +398,8 @@ def retry_crawl_job(db: Session, job: CrawlJob) -> CrawlJob:
         target_url=job.target_url,
         trigger="retry",
         retry_count=job.retry_count + 1,
+        max_retries=job.max_retries,
+        timeout_seconds=job.timeout_seconds,
     )
     db.add(retry)
     db.commit()
@@ -274,6 +414,9 @@ def cancel_crawl_job(db: Session, job: CrawlJob) -> CrawlJob:
     job.finished_at = datetime.utcnow()
     job.error_type = "cancelled"
     job.error_message = "cancelled by operator"
+    job.locked_at = None
+    job.locked_by = None
+    job.next_retry_at = None
     db.commit()
     db.refresh(job)
     return job
@@ -601,6 +744,10 @@ def get_published_trend(
     return items
 
 
+def get_latest_published_update_time(db: Session) -> datetime | None:
+    return db.scalar(select(func.max(StatValue.updated_at)).where(StatValue.status == "published"))
+
+
 def get_latest_published_values(
     db: Session,
     indicator_code: str,
@@ -628,6 +775,7 @@ def get_latest_published_values(
     return [
         {
             "region": value.region.name,
+            "region_id": value.region_id,
             "period": value.period,
             "value": value.value,
             "dimensions": value.dimensions,
@@ -638,6 +786,18 @@ def get_latest_published_values(
     ]
 
 
+def get_latest_period_for_indicator(db: Session, indicator_code: str) -> date | None:
+    indicator = db.scalar(select(Indicator).where(Indicator.code == indicator_code))
+    if not indicator:
+        return None
+    return db.scalar(
+        select(func.max(StatValue.period)).where(
+            StatValue.indicator_id == indicator.id,
+            StatValue.status == "published",
+        )
+    )
+
+
 def get_published_rankings(
     db: Session,
     indicator_code: str,
@@ -645,7 +805,9 @@ def get_published_rankings(
     area_type: str | None = None,
     limit: int = 10,
 ) -> dict[str, list[dict[str, Any]]]:
-    ranking_area_type = area_type if area_type is not None else "none"
+    ranking_area_type = area_type
+    if area_type is None and indicator_code.startswith("housing_price_"):
+        ranking_area_type = "none"
     values = get_latest_published_values(
         db,
         indicator_code=indicator_code,
