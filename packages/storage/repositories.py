@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from packages.domain.constants import DEFAULT_APP_CONFIGS, INDICATORS, INDICATOR_METADATA
 from packages.storage.models import (
     AppConfig,
+    ConfigVersion,
     CrawlJob,
     CrawlRecord,
     CrawlSchedule,
@@ -687,6 +688,19 @@ def serialize_app_config(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def serialize_config_version(version: ConfigVersion) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "key": version.key,
+        "version": version.version,
+        "before_value": version.before_value,
+        "after_value": version.after_value,
+        "actor": version.actor,
+        "reason": version.reason,
+        "created_at": version.created_at,
+    }
+
+
 def get_indicator_by_code(db: Session, code: str) -> Indicator | None:
     return db.scalar(select(Indicator).where(Indicator.code == code))
 
@@ -1204,12 +1218,171 @@ def list_app_configs(db: Session) -> list[AppConfig]:
     return list(db.scalars(select(AppConfig).order_by(AppConfig.key)))
 
 
-def update_app_config(db: Session, key: str, value: dict[str, Any], description: str | None = None) -> AppConfig:
+def is_known_app_config_key(db: Session, key: str) -> bool:
+    return key in DEFAULT_APP_CONFIGS or db.get(AppConfig, key) is not None
+
+
+def _copy_config_value(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    return _json_safe(value)
+
+
+def _next_config_version(db: Session, key: str) -> int:
+    latest = db.scalar(select(func.max(ConfigVersion.version)).where(ConfigVersion.key == key))
+    return int(latest or 0) + 1
+
+
+def create_config_version(
+    db: Session,
+    key: str,
+    before_value: dict[str, Any] | None,
+    after_value: dict[str, Any],
+    actor: str = "system",
+    reason: str | None = None,
+) -> ConfigVersion:
+    version = ConfigVersion(
+        key=key,
+        version=_next_config_version(db, key),
+        before_value=_copy_config_value(before_value),
+        after_value=_copy_config_value(after_value) or {},
+        actor=actor,
+        reason=reason,
+    )
+    db.add(version)
+    db.flush()
+    return version
+
+
+def list_config_versions(db: Session, key: str) -> list[ConfigVersion]:
+    return list(db.scalars(select(ConfigVersion).where(ConfigVersion.key == key).order_by(ConfigVersion.version.desc())))
+
+
+def get_config_version(db: Session, key: str, version_id: int) -> ConfigVersion | None:
+    return db.scalar(select(ConfigVersion).where(ConfigVersion.key == key, ConfigVersion.id == version_id))
+
+
+def diff_config_values(before: Any, after: Any, path: str = "$") -> list[dict[str, Any]]:
+    if isinstance(before, dict) and isinstance(after, dict):
+        changes: list[dict[str, Any]] = []
+        for key in sorted(set(before) | set(after)):
+            next_path = f"{path}.{key}" if path != "$" else key
+            if key not in before:
+                changes.append({"path": next_path, "change_type": "added", "before": None, "after": after[key]})
+            elif key not in after:
+                changes.append({"path": next_path, "change_type": "removed", "before": before[key], "after": None})
+            else:
+                changes.extend(diff_config_values(before[key], after[key], next_path))
+        return changes
+    if before != after:
+        return [{"path": path, "change_type": "changed", "before": before, "after": after}]
+    return []
+
+
+def summarize_config_value(key: str, value: dict[str, Any]) -> dict[str, Any]:
+    if key == "miniapp.home":
+        return {
+            "recommended_indicators": len(value.get("recommended_indicators", [])),
+            "recommended_regions": len(value.get("recommended_regions", [])),
+            "ranking_indicator": value.get("ranking_indicator"),
+            "default_trend_indicator": value.get("default_trend_indicator"),
+        }
+    if key == "quality.rules":
+        return {
+            "source_types": len(value),
+            "rules": sorted(value.keys()),
+        }
+    if key == "data_source.defaults":
+        return {
+            "interval_minutes": value.get("interval_minutes"),
+            "max_retries": value.get("max_retries"),
+            "timeout_seconds": value.get("timeout_seconds"),
+        }
+    return {"fields": len(value)}
+
+
+def preview_app_config_update(db: Session, key: str, value: dict[str, Any]) -> dict[str, Any]:
     config = get_app_config(db, key)
+    before = config.value or {}
+    return {
+        "key": key,
+        "diff": diff_config_values(before, value),
+        "before_summary": summarize_config_value(key, before),
+        "after_summary": summarize_config_value(key, value),
+    }
+
+
+def update_app_config(
+    db: Session,
+    key: str,
+    value: dict[str, Any],
+    description: str | None = None,
+    actor: str = "system",
+    reason: str | None = None,
+) -> AppConfig:
+    config = get_app_config(db, key)
+    before_value = _copy_config_value(config.value) or {}
+    before = serialize_app_config(config)
     config.value = value
     if description is not None:
         config.description = description
     config.updated_at = datetime.utcnow()
+    create_config_version(db, key, before_value, value, actor=actor, reason=reason)
+    db.flush()
+    log_operation(
+        db,
+        actor=actor,
+        action="app_config.update",
+        target_type="app_config",
+        target_id=key,
+        before=before,
+        after=serialize_app_config(config),
+        reason=reason,
+    )
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def rollback_app_config(
+    db: Session,
+    key: str,
+    version_id: int,
+    actor: str = "system",
+    reason: str | None = None,
+) -> AppConfig | None:
+    target = get_config_version(db, key, version_id)
+    if not target:
+        return None
+    config = get_app_config(db, key)
+    before_value = _copy_config_value(config.value) or {}
+    before = serialize_app_config(config)
+    config.value = _copy_config_value(target.after_value) or {}
+    config.updated_at = datetime.utcnow()
+    rollback_reason = reason or f"rollback to config version {target.version}"
+    create_config_version(
+        db,
+        key,
+        before_value=before_value,
+        after_value=config.value,
+        actor=actor,
+        reason=rollback_reason,
+    )
+    db.flush()
+    log_operation(
+        db,
+        actor=actor,
+        action="app_config.rollback",
+        target_type="app_config",
+        target_id=key,
+        before=before,
+        after={
+            **serialize_app_config(config),
+            "rollback_to_version_id": target.id,
+            "rollback_to_version": target.version,
+        },
+        reason=rollback_reason,
+    )
     db.commit()
     db.refresh(config)
     return config

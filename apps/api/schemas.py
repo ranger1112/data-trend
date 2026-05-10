@@ -146,6 +146,30 @@ class ReviewBatchPreviewOut(BaseModel):
 class AppConfigPatch(BaseModel):
     value: dict[str, Any]
     description: str | None = None
+    reason: str | None = None
+
+
+class ConfigPreviewRequest(BaseModel):
+    value: dict[str, Any]
+
+
+class ConfigRollbackRequest(BaseModel):
+    version_id: int
+    reason: str | None = None
+
+
+class ConfigDiffItemOut(BaseModel):
+    path: str
+    change_type: str
+    before: Any | None = None
+    after: Any | None = None
+
+
+class ConfigPreviewOut(BaseModel):
+    key: str
+    diff: list[ConfigDiffItemOut]
+    before_summary: dict[str, Any]
+    after_summary: dict[str, Any]
 
 
 class IndicatorPatch(BaseModel):
@@ -386,5 +410,18 @@ class AppConfigOut(BaseModel):
     value: dict[str, Any]
     description: str | None
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ConfigVersionOut(BaseModel):
+    id: int
+    key: str
+    version: int
+    before_value: dict[str, Any] | None
+    after_value: dict[str, Any]
+    actor: str
+    reason: str | None
+    created_at: datetime
 
     model_config = {"from_attributes": True}

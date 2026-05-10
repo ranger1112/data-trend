@@ -594,6 +594,124 @@ def test_review_batch_preview_reports_impact_without_mutation(tmp_path):
     app.dependency_overrides.clear()
 
 
+def test_config_versions_preview_and_rollback(tmp_path):
+    client, session_factory = make_client(tmp_path)
+    headers = auth_headers(client)
+
+    config_updates = {
+        "miniapp.home": {
+            "recommended_indicators": ["cpi_yoy"],
+            "recommended_regions": ["全国"],
+            "ranking_indicator": "cpi_yoy",
+            "default_trend_indicator": "cpi_yoy",
+        },
+        "quality.rules": {
+            "cpi": {
+                "expected_regions": 1,
+                "expected_indicators": 1,
+                "min_values": 1,
+                "required_dimensions": ["source_type", "frequency"],
+                "value_min": -30,
+                "value_max": 30,
+            }
+        },
+        "data_source.defaults": {"max_retries": 4, "timeout_seconds": 120, "interval_minutes": 45},
+    }
+    first_version_ids = {}
+    for key, value in config_updates.items():
+        patch_response = client.patch(
+            f"/admin/configs/{key}",
+            json={"value": value, "description": f"{key} 测试配置", "reason": "版本测试"},
+            headers=headers,
+        )
+        assert patch_response.status_code == 200
+        versions_response = client.get(f"/admin/configs/{key}/versions", headers=headers)
+        assert versions_response.status_code == 200
+        versions = versions_response.json()
+        assert versions[0]["key"] == key
+        assert versions[0]["version"] == 1
+        assert versions[0]["actor"] == "admin"
+        assert versions[0]["reason"] == "版本测试"
+        assert versions[0]["before_value"] != versions[0]["after_value"]
+        first_version_ids[key] = versions[0]["id"]
+
+    preview_response = client.post(
+        "/admin/configs/miniapp.home/preview",
+        json={
+            "value": {
+                "recommended_indicators": ["cpi_yoy", "housing_price_mom"],
+                "ranking_indicator": "housing_price_mom",
+            }
+        },
+        headers=headers,
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert {item["path"]: item["change_type"] for item in preview["diff"]} == {
+        "default_trend_indicator": "removed",
+        "ranking_indicator": "changed",
+        "recommended_indicators": "changed",
+        "recommended_regions": "removed",
+    }
+    assert preview["before_summary"]["recommended_regions"] == 1
+    assert preview["after_summary"]["recommended_indicators"] == 2
+
+    second_update = client.patch(
+        "/admin/configs/miniapp.home",
+        json={
+            "value": {
+                "recommended_indicators": ["housing_price_mom"],
+                "recommended_regions": ["北京"],
+                "ranking_indicator": "housing_price_mom",
+                "default_trend_indicator": "housing_price_mom",
+            },
+            "reason": "误改测试",
+        },
+        headers=headers,
+    )
+    assert second_update.status_code == 200
+
+    detail_response = client.get(
+        f"/admin/configs/miniapp.home/versions/{first_version_ids['miniapp.home']}",
+        headers=headers,
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["after_value"]["ranking_indicator"] == "cpi_yoy"
+
+    rollback_response = client.post(
+        "/admin/configs/miniapp.home/rollback",
+        json={"version_id": first_version_ids["miniapp.home"], "reason": "回滚测试"},
+        headers=headers,
+    )
+    assert rollback_response.status_code == 200
+    assert rollback_response.json()["value"] == config_updates["miniapp.home"]
+
+    missing_response = client.post(
+        "/admin/configs/miniapp.home/rollback",
+        json={"version_id": 999999},
+        headers=headers,
+    )
+    assert missing_response.status_code == 404
+
+    unknown_response = client.post(
+        "/admin/configs/unknown.config/preview",
+        json={"value": {}},
+        headers=headers,
+    )
+    assert unknown_response.status_code == 404
+
+    with session_factory() as db:
+        versions = repo.list_config_versions(db, "miniapp.home")
+        assert [version.version for version in versions] == [3, 2, 1]
+        logs = repo.list_operation_logs(db, target_type="app_config")
+        assert logs[0].action == "app_config.rollback"
+        assert logs[0].reason == "回滚测试"
+        assert logs[0].after["rollback_to_version"] == 1
+        assert any(log.action == "app_config.preview" for log in logs)
+
+    app.dependency_overrides.clear()
+
+
 def test_quality_report_details_locate_failed_values(tmp_path):
     client, session_factory = make_client(tmp_path)
     headers = auth_headers(client)

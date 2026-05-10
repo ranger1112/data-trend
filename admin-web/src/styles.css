@@ -293,6 +293,16 @@ input[type="checkbox"] {
   font-size: 13px;
 }
 
+.configActions {
+  margin: 10px 0;
+}
+
+.configActions span,
+.muted {
+  color: #65758b;
+  font-size: 13px;
+}
+
 .keyValue strong {
   overflow-wrap: anywhere;
 }

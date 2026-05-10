@@ -10,6 +10,10 @@ from apps.api.schemas import (
     AlertTestOut,
     AppConfigOut,
     AppConfigPatch,
+    ConfigPreviewOut,
+    ConfigPreviewRequest,
+    ConfigRollbackRequest,
+    ConfigVersionOut,
     IndicatorOut,
     IndicatorPatch,
     CrawlJobCreate,
@@ -518,20 +522,87 @@ def patch_app_config(
 ):
     if not isinstance(payload.value, dict):
         raise HTTPException(status_code=422, detail="config value must be an object")
-    before_config = repo.get_app_config(db, key)
-    before = repo.serialize_app_config(before_config)
-    updated = repo.update_app_config(db, key=key, value=payload.value, description=payload.description)
+    if not repo.is_known_app_config_key(db, key):
+        raise HTTPException(status_code=404, detail="config not found")
+    return repo.update_app_config(
+        db,
+        key=key,
+        value=payload.value,
+        description=payload.description,
+        actor=principal.username,
+        reason=payload.reason,
+    )
+
+
+@router.get("/configs/{key}/versions", response_model=list[ConfigVersionOut])
+def list_config_versions(
+    key: str,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    if not repo.is_known_app_config_key(db, key):
+        raise HTTPException(status_code=404, detail="config not found")
+    return repo.list_config_versions(db, key)
+
+
+@router.get("/configs/{key}/versions/{version_id}", response_model=ConfigVersionOut)
+def get_config_version(
+    key: str,
+    version_id: int,
+    db: Session = Depends(get_db),
+    _principal=Depends(require_role("readonly")),
+):
+    if not repo.is_known_app_config_key(db, key):
+        raise HTTPException(status_code=404, detail="config not found")
+    version = repo.get_config_version(db, key, version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="config version not found")
+    return version
+
+
+@router.post("/configs/{key}/preview", response_model=ConfigPreviewOut)
+def preview_app_config(
+    key: str,
+    payload: ConfigPreviewRequest,
+    db: Session = Depends(get_db),
+    principal: AdminPrincipal = Depends(require_role("operator")),
+):
+    if not isinstance(payload.value, dict):
+        raise HTTPException(status_code=422, detail="config value must be an object")
+    if not repo.is_known_app_config_key(db, key):
+        raise HTTPException(status_code=404, detail="config not found")
+    preview = repo.preview_app_config_update(db, key, payload.value)
     repo.log_operation(
         db,
         actor=principal.username,
-        action="app_config.update",
+        action="app_config.preview",
         target_type="app_config",
         target_id=key,
-        before=before,
-        after=repo.serialize_app_config(updated),
+        before={"summary": preview["before_summary"]},
+        after={"summary": preview["after_summary"], "diff_count": len(preview["diff"])},
     )
     db.commit()
-    db.refresh(updated)
+    return preview
+
+
+@router.post("/configs/{key}/rollback", response_model=AppConfigOut)
+def rollback_app_config(
+    key: str,
+    payload: ConfigRollbackRequest,
+    db: Session = Depends(get_db),
+    principal: AdminPrincipal = Depends(require_role("operator")),
+):
+    if not repo.is_known_app_config_key(db, key):
+        raise HTTPException(status_code=404, detail="config not found")
+    updated = repo.rollback_app_config(
+        db,
+        key=key,
+        version_id=payload.version_id,
+        actor=principal.username,
+        reason=payload.reason,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="config version not found")
     return updated
 
 

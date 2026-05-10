@@ -6,6 +6,7 @@ import {
   Database,
   FileText,
   Filter,
+  History,
   ListChecks,
   Play,
   RadioTower,
@@ -180,6 +181,31 @@ type AppConfig = {
   updated_at: string;
 };
 
+type ConfigVersion = {
+  id: number;
+  key: string;
+  version: number;
+  before_value: Record<string, unknown> | null;
+  after_value: Record<string, unknown>;
+  actor: string;
+  reason: string | null;
+  created_at: string;
+};
+
+type ConfigDiffItem = {
+  path: string;
+  change_type: string;
+  before: unknown;
+  after: unknown;
+};
+
+type ConfigPreview = {
+  key: string;
+  diff: ConfigDiffItem[];
+  before_summary: Record<string, unknown>;
+  after_summary: Record<string, unknown>;
+};
+
 type PublishBatch = {
   id: number;
   action: string;
@@ -296,6 +322,8 @@ function App() {
   const [jobDetail, setJobDetail] = useState<CrawlJobDetail | null>(null);
   const [qualityDetail, setQualityDetail] = useState<QualityReportDetail | null>(null);
   const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({});
+  const [configHistory, setConfigHistory] = useState<{ key: string; versions: ConfigVersion[] } | null>(null);
+  const [configPreview, setConfigPreview] = useState<ConfigPreview | null>(null);
   const [indicatorDrafts, setIndicatorDrafts] = useState<Record<string, Partial<Indicator>>>({});
 
   async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -460,12 +488,55 @@ function App() {
       setMessage(`${config.key} 不是合法 JSON`);
       return;
     }
+    const preview = await request<ConfigPreview>(`/admin/configs/${config.key}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ value }),
+    });
+    setConfigPreview(preview);
+    if (preview.diff.length > 0 && !window.confirm(formatConfigPreview(preview, "保存"))) return;
     await request<AppConfig>(`/admin/configs/${config.key}`, {
       method: "PATCH",
-      body: JSON.stringify({ value, description: config.description }),
+      body: JSON.stringify({ value, description: config.description, reason: "管理端保存" }),
     });
     setMessage("配置已保存");
     await refresh();
+    if (configHistory?.key === config.key) await loadConfigHistory(config.key);
+  }
+
+  async function previewConfig(config: AppConfig) {
+    let value: Record<string, unknown>;
+    try {
+      value = JSON.parse(configDrafts[config.key] ?? "{}");
+    } catch {
+      setMessage(`${config.key} 不是合法 JSON`);
+      return;
+    }
+    const preview = await request<ConfigPreview>(`/admin/configs/${config.key}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ value }),
+    });
+    setConfigPreview(preview);
+  }
+
+  async function loadConfigHistory(key: string) {
+    const versions = await request<ConfigVersion[]>(`/admin/configs/${key}/versions`);
+    setConfigHistory({ key, versions });
+  }
+
+  async function rollbackConfig(version: ConfigVersion) {
+    const preview = await request<ConfigPreview>(`/admin/configs/${version.key}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ value: version.after_value }),
+    });
+    setConfigPreview(preview);
+    if (!window.confirm(formatConfigPreview(preview, `回滚到 v${version.version}`))) return;
+    await request<AppConfig>(`/admin/configs/${version.key}/rollback`, {
+      method: "POST",
+      body: JSON.stringify({ version_id: version.id, reason: `管理端回滚到 v${version.version}` }),
+    });
+    setMessage(`已回滚 ${version.key} 到 v${version.version}`);
+    await refresh();
+    await loadConfigHistory(version.key);
   }
 
   async function saveIndicator(indicator: Indicator) {
@@ -952,6 +1023,42 @@ function App() {
               </ul>
             </DetailPanel>
           )}
+          {configHistory && (
+            <DetailPanel title={`配置历史 ${configHistory.key}`} onClose={() => setConfigHistory(null)}>
+              {configHistory.versions.length === 0 ? (
+                <p className="muted">暂无历史版本</p>
+              ) : (
+                <DataTable
+                  headers={["版本", "操作人", "原因", "时间", "摘要", "操作"]}
+                  rows={configHistory.versions.map((version) => [
+                    `v${version.version}`,
+                    version.actor,
+                    version.reason ?? "-",
+                    formatDate(version.created_at),
+                    formatConfigSummary(version.after_value),
+                    <button className="secondary" onClick={() => rollbackConfig(version)}>
+                      回滚
+                    </button>,
+                  ])}
+                />
+              )}
+            </DetailPanel>
+          )}
+          {configPreview && (
+            <DetailPanel title={`配置 Diff ${configPreview.key}`} onClose={() => setConfigPreview(null)}>
+              <KeyValue label="修改前摘要" value={formatConfigSummary(configPreview.before_summary)} />
+              <KeyValue label="修改后摘要" value={formatConfigSummary(configPreview.after_summary)} />
+              <DataTable
+                headers={["字段", "类型", "旧值", "新值"]}
+                rows={configPreview.diff.map((item) => [
+                  item.path,
+                  formatConfigChangeType(item.change_type),
+                  formatConfigValue(item.before),
+                  formatConfigValue(item.after),
+                ])}
+              />
+            </DetailPanel>
+          )}
         </section>
       )}
 
@@ -1196,8 +1303,20 @@ function App() {
                   <span>{config.description ?? "配置项"}</span>
                 </div>
                 <button className="secondary" onClick={() => saveConfig(config)}>
+                  <Save size={16} />
                   保存
                 </button>
+              </div>
+              <div className="actions configActions">
+                <button className="secondary" onClick={() => previewConfig(config)}>
+                  <FileText size={16} />
+                  预览
+                </button>
+                <button className="secondary" onClick={() => loadConfigHistory(config.key)}>
+                  <History size={16} />
+                  历史
+                </button>
+                <span>{formatDate(config.updated_at)}</span>
               </div>
               <textarea
                 value={configDrafts[config.key] ?? ""}
@@ -1326,6 +1445,7 @@ function formatHealth(health: DataSourceHealth | undefined) {
 
 function formatOperationAction(action: string) {
   const labels: Record<string, string> = {
+    "app_config.rollback": "配置回滚",
     "app_config.update": "配置更新",
     "data_source.create": "数据源创建",
     "data_source.update": "数据源更新",
@@ -1368,6 +1488,41 @@ function formatBatchPreview(preview: ReviewBatchPreview, label: string) {
     `影响指标 ${preview.indicator_count} 个：${indicators}`,
     `影响周期：${periods}`,
   ].join("\n");
+}
+
+function formatConfigPreview(preview: ConfigPreview, action: string) {
+  const changes = preview.diff.slice(0, 8).map((item) => `${formatConfigChangeType(item.change_type)} ${item.path}`);
+  return [
+    `确认${action}配置 ${preview.key}？`,
+    `变更字段 ${preview.diff.length} 个。`,
+    `修改前：${formatConfigSummary(preview.before_summary)}`,
+    `修改后：${formatConfigSummary(preview.after_summary)}`,
+    changes.length ? `字段：${changes.join("；")}` : "字段：无变化",
+  ].join("\n");
+}
+
+function formatConfigChangeType(type: string) {
+  const labels: Record<string, string> = {
+    added: "新增",
+    removed: "删除",
+    changed: "修改",
+  };
+  return labels[type] ?? type;
+}
+
+function formatConfigSummary(value: Record<string, unknown>) {
+  const entries = Object.entries(value);
+  if (entries.length === 0) return "-";
+  return entries
+    .slice(0, 5)
+    .map(([key, item]) => `${key}:${formatConfigValue(item)}`)
+    .join(" / ");
+}
+
+function formatConfigValue(value: unknown) {
+  if (value === null || value === undefined) return "-";
+  if (typeof value === "object") return truncate(JSON.stringify(value));
+  return truncate(String(value));
 }
 
 function formatQualityDetails(report: QualityReport) {

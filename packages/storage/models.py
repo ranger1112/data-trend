@@ -130,6 +130,19 @@ class AppConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ConfigVersion(Base):
+    __tablename__ = "config_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    before_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    after_value: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(80), nullable=False, default="system")
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class OperationLog(Base):
     __tablename__ = "operation_logs"
 
