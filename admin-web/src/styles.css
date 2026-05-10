@@ -22,6 +22,16 @@ main {
   gap: 12px;
 }
 
+.wideActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.wideActions input,
+.wideActions select {
+  width: 150px;
+}
+
 .topbar,
 .panelHead {
   justify-content: space-between;

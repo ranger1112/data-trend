@@ -39,12 +39,18 @@ def get_trend(
 @router.get("/stat-values/latest")
 def latest_values(
     indicator_code: str = Query(default="housing_price_mom"),
+    house_type: str | None = None,
+    area_type: str | None = None,
     db: Session = Depends(get_db),
 ):
-    return repo.get_latest_published_values(db, indicator_code=indicator_code)
+    return repo.get_latest_published_values(
+        db,
+        indicator_code=indicator_code,
+        house_type=house_type,
+        area_type=area_type,
+    )
 
 
 @router.get("/dashboard/overview")
 def dashboard_overview(db: Session = Depends(get_db)):
     return repo.get_dashboard_overview(db)
-

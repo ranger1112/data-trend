@@ -40,11 +40,13 @@ class CrawlJobCreate(BaseModel):
 class CrawlJobOut(BaseModel):
     id: int
     data_source_id: int | None
+    target_url: str | None
     status: str
     trigger: str
     total_records: int
     imported_records: int
     skipped_records: int
+    error_type: str | None
     error_message: str | None
     started_at: datetime | None
     finished_at: datetime | None

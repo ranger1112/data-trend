@@ -83,8 +83,12 @@ def update_data_source(
     return data_source
 
 
-def create_crawl_job(db: Session, data_source_id: int | None = None) -> CrawlJob:
-    job = CrawlJob(data_source_id=data_source_id)
+def create_crawl_job(
+    db: Session,
+    data_source_id: int | None = None,
+    target_url: str | None = None,
+) -> CrawlJob:
+    job = CrawlJob(data_source_id=data_source_id, target_url=target_url)
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -94,6 +98,8 @@ def create_crawl_job(db: Session, data_source_id: int | None = None) -> CrawlJob
 def mark_job_running(db: Session, job: CrawlJob) -> None:
     job.status = "running"
     job.started_at = datetime.utcnow()
+    job.error_type = None
+    job.error_message = None
     db.commit()
 
 
@@ -104,6 +110,7 @@ def mark_job_finished(
     total_records: int | None = None,
     imported_records: int | None = None,
     skipped_records: int | None = None,
+    error_type: str | None = None,
     error_message: str | None = None,
     finished_at: datetime | None = None,
 ) -> CrawlJob:
@@ -114,6 +121,7 @@ def mark_job_finished(
         job.imported_records = imported_records
     if skipped_records is not None:
         job.skipped_records = skipped_records
+    job.error_type = error_type
     job.error_message = error_message
     job.finished_at = finished_at or datetime.utcnow()
     db.commit()
@@ -121,8 +129,30 @@ def mark_job_finished(
     return job
 
 
-def list_crawl_jobs(db: Session) -> list[CrawlJob]:
-    return list(db.scalars(select(CrawlJob).order_by(CrawlJob.id.desc()).limit(100)))
+def has_active_crawl_job(db: Session, data_source_id: int | None, target_url: str) -> bool:
+    statement = select(CrawlJob).where(
+        CrawlJob.status.in_(["pending", "running"]),
+        CrawlJob.target_url == target_url,
+    )
+    if data_source_id is None:
+        statement = statement.where(CrawlJob.data_source_id.is_(None))
+    else:
+        statement = statement.where(CrawlJob.data_source_id == data_source_id)
+    return db.scalar(statement.limit(1)) is not None
+
+
+def list_crawl_jobs(
+    db: Session,
+    status: str | None = None,
+    data_source_id: int | None = None,
+) -> list[CrawlJob]:
+    statement = select(CrawlJob)
+    if status:
+        statement = statement.where(CrawlJob.status == status)
+    if data_source_id:
+        statement = statement.where(CrawlJob.data_source_id == data_source_id)
+    statement = statement.order_by(CrawlJob.id.desc()).limit(100)
+    return list(db.scalars(statement))
 
 
 def upsert_crawl_record(
@@ -143,8 +173,25 @@ def upsert_crawl_record(
     return record
 
 
-def list_crawl_records(db: Session) -> list[CrawlRecord]:
-    return list(db.scalars(select(CrawlRecord).order_by(CrawlRecord.id.desc()).limit(100)))
+def list_crawl_records(
+    db: Session,
+    status: str | None = None,
+    keyword: str | None = None,
+    published_from: date | None = None,
+    published_to: date | None = None,
+) -> list[CrawlRecord]:
+    statement = select(CrawlRecord)
+    if status:
+        statement = statement.where(CrawlRecord.status == status)
+    if keyword:
+        pattern = f"%{keyword}%"
+        statement = statement.where(CrawlRecord.title.like(pattern))
+    if published_from:
+        statement = statement.where(CrawlRecord.published_at >= datetime.combine(published_from, datetime.min.time()))
+    if published_to:
+        statement = statement.where(CrawlRecord.published_at <= datetime.combine(published_to, datetime.max.time()))
+    statement = statement.order_by(CrawlRecord.id.desc()).limit(100)
+    return list(db.scalars(statement))
 
 
 def get_or_create_region(db: Session, name: str, level: str) -> Region:
@@ -318,7 +365,12 @@ def get_published_trend(
     return items
 
 
-def get_latest_published_values(db: Session, indicator_code: str) -> list[dict[str, Any]]:
+def get_latest_published_values(
+    db: Session,
+    indicator_code: str,
+    house_type: str | None = None,
+    area_type: str | None = None,
+) -> list[dict[str, Any]]:
     indicator = db.scalar(select(Indicator).where(Indicator.code == indicator_code))
     if not indicator:
         return []
@@ -345,6 +397,8 @@ def get_latest_published_values(db: Session, indicator_code: str) -> list[dict[s
             "dimensions": value.dimensions,
         }
         for value in values
+        if (not house_type or value.dimensions.get("house_type") == house_type)
+        and (not area_type or value.dimensions.get("area_type") == area_type)
     ]
 
 
@@ -356,7 +410,9 @@ def get_dashboard_overview(db: Session) -> dict[str, Any]:
             select(func.count(StatValue.id)).where(StatValue.status == "published")
         )
         or 0,
-        "latest_period": db.scalar(select(func.max(StatValue.period))),
+        "latest_period": db.scalar(
+            select(func.max(StatValue.period)).where(StatValue.status == "published")
+        ),
     }
 
 

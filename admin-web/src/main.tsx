@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Database,
   FileText,
+  Filter,
   Play,
   RadioTower,
   RefreshCcw,
@@ -30,13 +31,26 @@ type DataSource = {
   enabled: boolean;
 };
 
+type Region = {
+  id: number;
+  name: string;
+};
+
+type Indicator = {
+  id: number;
+  code: string;
+  name: string;
+};
+
 type CrawlJob = {
   id: number;
   data_source_id: number | null;
+  target_url: string | null;
   status: string;
   total_records: number;
   imported_records: number;
   skipped_records: number;
+  error_type: string | null;
   error_message: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -73,6 +87,8 @@ type DataSourceForm = {
 function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
+  const [regions, setRegions] = useState<Region[]>([]);
+  const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [jobs, setJobs] = useState<CrawlJob[]>([]);
   const [records, setRecords] = useState<CrawlRecord[]>([]);
   const [statValues, setStatValues] = useState<StatValue[]>([]);
@@ -86,6 +102,14 @@ function App() {
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [adHocUrl, setAdHocUrl] = useState(DEFAULT_URL);
   const [statStatus, setStatStatus] = useState("draft");
+  const [jobStatus, setJobStatus] = useState("");
+  const [recordKeyword, setRecordKeyword] = useState("");
+  const [recordStatus, setRecordStatus] = useState("");
+  const [recordFrom, setRecordFrom] = useState("");
+  const [recordTo, setRecordTo] = useState("");
+  const [statRegionId, setStatRegionId] = useState("");
+  const [statIndicatorCode, setStatIndicatorCode] = useState("");
+  const [statPeriod, setStatPeriod] = useState("");
   const [selectedStatIds, setSelectedStatIds] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -105,15 +129,33 @@ function App() {
   }
 
   async function refresh() {
-    const [overviewRes, sourcesRes, jobsRes, recordsRes, statValuesRes] = await Promise.all([
+    const [overviewRes, sourcesRes, regionsRes, indicatorsRes, jobsRes, recordsRes, statValuesRes] = await Promise.all([
       request<Overview>("/mini/dashboard/overview"),
       request<DataSource[]>("/admin/data-sources"),
-      request<CrawlJob[]>("/admin/crawl-jobs"),
-      request<CrawlRecord[]>("/admin/crawl-records"),
-      request<StatValue[]>(`/admin/stat-values?status=${statStatus}`),
+      request<Region[]>("/mini/regions"),
+      request<Indicator[]>("/mini/indicators"),
+      request<CrawlJob[]>(`/admin/crawl-jobs${buildQuery({ status: jobStatus })}`),
+      request<CrawlRecord[]>(
+        `/admin/crawl-records${buildQuery({
+          status: recordStatus,
+          keyword: recordKeyword,
+          published_from: recordFrom,
+          published_to: recordTo,
+        })}`,
+      ),
+      request<StatValue[]>(
+        `/admin/stat-values${buildQuery({
+          status: statStatus,
+          region_id: statRegionId,
+          indicator_code: statIndicatorCode,
+          period: statPeriod,
+        })}`,
+      ),
     ]);
     setOverview(overviewRes);
     setDataSources(sourcesRes);
+    setRegions(regionsRes);
+    setIndicators(indicatorsRes);
     setJobs(jobsRes);
     setRecords(recordsRes);
     setStatValues(statValuesRes);
@@ -196,7 +238,16 @@ function App() {
 
   useEffect(() => {
     refresh().catch((error) => setMessage(error.message));
-  }, [statStatus]);
+  }, [jobStatus, statStatus]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (activeJobs > 0) {
+        refresh().catch((error) => setMessage(error.message));
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeJobs, jobStatus, recordKeyword, recordStatus, recordFrom, recordTo, statStatus, statRegionId, statIndicatorCode, statPeriod]);
 
   return (
     <main>
@@ -286,23 +337,50 @@ function App() {
       </section>
 
       <section className="panel">
-        <h2>最近任务</h2>
+        <div className="panelHead">
+          <h2>最近任务</h2>
+          <select value={jobStatus} onChange={(event) => setJobStatus(event.target.value)}>
+            <option value="">全部状态</option>
+            <option value="pending">pending</option>
+            <option value="running">running</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+          </select>
+        </div>
         <DataTable
-          headers={["ID", "状态", "总数", "导入", "跳过", "开始", "错误"]}
+          headers={["ID", "状态", "目标", "总数", "导入", "跳过", "开始", "错误"]}
           rows={jobs.map((job) => [
             job.id,
             job.status,
+            truncate(job.target_url ?? "-"),
             job.total_records,
             job.imported_records,
             job.skipped_records,
             formatDate(job.started_at),
-            job.error_message ?? "-",
+            job.error_type ? `${job.error_type}: ${job.error_message ?? ""}` : (job.error_message ?? "-"),
           ])}
         />
       </section>
 
       <section className="panel">
-        <h2>采集记录</h2>
+        <div className="panelHead">
+          <h2>采集记录</h2>
+          <div className="actions wideActions">
+            <input value={recordKeyword} onChange={(event) => setRecordKeyword(event.target.value)} placeholder="标题关键字" />
+            <select value={recordStatus} onChange={(event) => setRecordStatus(event.target.value)}>
+              <option value="">全部状态</option>
+              <option value="parsed">parsed</option>
+              <option value="failed">failed</option>
+              <option value="skipped">skipped</option>
+            </select>
+            <input type="date" value={recordFrom} onChange={(event) => setRecordFrom(event.target.value)} />
+            <input type="date" value={recordTo} onChange={(event) => setRecordTo(event.target.value)} />
+            <button className="secondary" onClick={() => refresh()}>
+              <Filter size={16} />
+              筛选
+            </button>
+          </div>
+        </div>
         <DataTable
           headers={["ID", "标题", "状态", "发布日期", "解析时间"]}
           rows={records.map((record) => [
@@ -320,15 +398,36 @@ function App() {
       <section className="panel">
         <div className="panelHead">
           <h2>数据审核</h2>
-          <div className="actions">
+          <div className="actions wideActions">
             <select value={statStatus} onChange={(event) => setStatStatus(event.target.value)}>
               <option value="draft">待发布</option>
               <option value="published">已发布</option>
               <option value="rejected">已拒绝</option>
             </select>
+            <select value={statRegionId} onChange={(event) => setStatRegionId(event.target.value)}>
+              <option value="">全部城市</option>
+              {regions.map((region) => (
+                <option key={region.id} value={region.id}>
+                  {region.name}
+                </option>
+              ))}
+            </select>
+            <select value={statIndicatorCode} onChange={(event) => setStatIndicatorCode(event.target.value)}>
+              <option value="">全部指标</option>
+              {indicators.map((indicator) => (
+                <option key={indicator.code} value={indicator.code}>
+                  {indicator.name}
+                </option>
+              ))}
+            </select>
+            <input type="date" value={statPeriod} onChange={(event) => setStatPeriod(event.target.value)} />
+            <button className="secondary" onClick={() => refresh()}>
+              <Filter size={16} />
+              筛选
+            </button>
             <button onClick={publishSelected} disabled={publishing || selectedStatIds.length === 0}>
               <CheckCircle2 size={16} />
-              发布选中
+              发布选中({selectedStatIds.length})
             </button>
           </div>
         </div>
@@ -419,6 +518,19 @@ function formatDimensions(dimensions: Record<string, string>) {
   return Object.entries(dimensions)
     .map(([key, value]) => `${key}:${value}`)
     .join(" / ");
+}
+
+function buildQuery(params: Record<string, string>) {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) query.set(key, value);
+  });
+  const value = query.toString();
+  return value ? `?${value}` : "";
+}
+
+function truncate(value: string) {
+  return value.length > 58 ? `${value.slice(0, 58)}...` : value;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

@@ -53,6 +53,17 @@ def test_admin_data_source_update_and_job_creation(tmp_path):
     )
     assert job_response.status_code == 200
     assert job_response.json()["status"] == "pending"
+    assert job_response.json()["target_url"] == "https://example.test/list.html"
+
+    duplicate_response = client.post(
+        "/admin/crawl-jobs",
+        json={"data_source_id": data_source["id"], "run_now": False},
+    )
+    assert duplicate_response.status_code == 409
+
+    filtered_jobs = client.get("/admin/crawl-jobs?status=pending")
+    assert filtered_jobs.status_code == 200
+    assert len(filtered_jobs.json()) == 1
 
     app.dependency_overrides.clear()
 
@@ -74,19 +85,49 @@ def test_admin_stat_value_publish_flow(tmp_path):
             source_id=None,
             dimensions={"house_type": "new_house", "area_type": "none"},
         )
+        repo.upsert_crawl_record(
+            db,
+            data_source_id=repo.get_or_create_data_source(
+                db,
+                name="房价文章",
+                entry_url="https://example.test/article.html",
+                source="国家统计局",
+                source_type="housing_price",
+            ).id,
+            title="2025年10月份70个大中城市商品住宅销售价格变动情况",
+            url="https://example.test/article.html",
+            published_at=__import__("datetime").datetime(2025, 11, 1, 9, 30),
+        )
         db.commit()
         value_id = value.id
 
-    list_response = client.get("/admin/stat-values?status=draft")
+    list_response = client.get("/admin/stat-values?status=draft&indicator_code=housing_price_mom")
     assert list_response.status_code == 200
     assert list_response.json()[0]["id"] == value_id
+
+    record_response = client.get("/admin/crawl-records?keyword=10月份&published_from=2025-10-01")
+    assert record_response.status_code == 200
+    assert record_response.json()[0]["title"].startswith("2025年10月份")
 
     publish_response = client.post("/admin/stat-values/publish", json={"ids": [value_id]})
     assert publish_response.status_code == 200
     assert publish_response.json()["published"] == 1
 
-    mini_response = client.get("/mini/stat-values/latest?indicator_code=housing_price_mom")
+    mini_response = client.get(
+        "/mini/stat-values/latest?indicator_code=housing_price_mom&house_type=new_house"
+    )
     assert mini_response.status_code == 200
     assert mini_response.json()[0]["region"] == "北京"
+
+    overview_response = client.get("/mini/dashboard/overview")
+    assert overview_response.status_code == 200
+    assert overview_response.json()["published_values"] == 1
+    assert overview_response.json()["latest_period"] == "2025-10-01"
+
+    empty_mini_response = client.get(
+        "/mini/stat-values/latest?indicator_code=housing_price_mom&house_type=second_hand"
+    )
+    assert empty_mini_response.status_code == 200
+    assert empty_mini_response.json() == []
 
     app.dependency_overrides.clear()

@@ -9,6 +9,19 @@ Page({
     overview: {},
     latestValues: [],
     trend: [],
+    houseTypes: [
+      { label: "全部住宅", value: "" },
+      { label: "新建商品住宅", value: "new_house" },
+      { label: "二手住宅", value: "second_hand" }
+    ],
+    areaTypes: [
+      { label: "全部面积", value: "" },
+      { label: "90㎡以下", value: "under_90" },
+      { label: "90-144㎡", value: "between_90_144" },
+      { label: "144㎡以上", value: "over_144" }
+    ],
+    currentHouseType: { label: "全部住宅", value: "" },
+    currentAreaType: { label: "全部面积", value: "" },
     loading: false,
     error: ""
   },
@@ -23,7 +36,7 @@ Page({
       this.request("/mini/dashboard/overview"),
       this.request("/mini/regions"),
       this.request("/mini/indicators"),
-      this.request("/mini/stat-values/latest")
+      this.loadLatestValues()
     ])
       .then(([overview, regions, indicators, latestValues]) => {
         this.setData({
@@ -44,13 +57,27 @@ Page({
       });
   },
 
+  loadLatestValues() {
+    const { currentIndicator, currentHouseType, currentAreaType } = this.data;
+    const params = [`indicator_code=${currentIndicator.code || "housing_price_mom"}`];
+    if (currentHouseType.value) params.push(`house_type=${currentHouseType.value}`);
+    if (currentAreaType.value) params.push(`area_type=${currentAreaType.value}`);
+    return this.request(`/mini/stat-values/latest?${params.join("&")}`);
+  },
+
   loadTrend() {
-    const { currentRegion, currentIndicator } = this.data;
+    const { currentRegion, currentIndicator, currentHouseType, currentAreaType } = this.data;
     if (!currentRegion.id || !currentIndicator.code) {
       this.setData({ trend: [] });
       return Promise.resolve();
     }
-    const path = `/mini/stat-values/trend?region_id=${currentRegion.id}&indicator_code=${currentIndicator.code}`;
+    const params = [
+      `region_id=${currentRegion.id}`,
+      `indicator_code=${currentIndicator.code}`
+    ];
+    if (currentHouseType.value) params.push(`house_type=${currentHouseType.value}`);
+    if (currentAreaType.value) params.push(`area_type=${currentAreaType.value}`);
+    const path = `/mini/stat-values/trend?${params.join("&")}`;
     return this.request(path).then((res) => {
       this.setData({ trend: res.items || [] });
     });
@@ -68,11 +95,32 @@ Page({
     this.setData({ currentIndicator: indicator, loading: true });
     Promise.all([
       this.loadTrend(),
-      this.request(`/mini/stat-values/latest?indicator_code=${indicator.code}`).then((latestValues) => {
+      this.loadLatestValues().then((latestValues) => {
         this.setData({ latestValues });
       })
     ])
       .catch(() => this.setData({ error: "指标数据加载失败" }))
+      .finally(() => this.setData({ loading: false }));
+  },
+
+  onHouseTypeChange(event) {
+    this.setData({ currentHouseType: this.data.houseTypes[event.detail.value], loading: true });
+    this.reloadDataForFilters();
+  },
+
+  onAreaTypeChange(event) {
+    this.setData({ currentAreaType: this.data.areaTypes[event.detail.value], loading: true });
+    this.reloadDataForFilters();
+  },
+
+  reloadDataForFilters() {
+    Promise.all([
+      this.loadTrend(),
+      this.loadLatestValues().then((latestValues) => {
+        this.setData({ latestValues });
+      })
+    ])
+      .catch(() => this.setData({ error: "筛选数据加载失败" }))
       .finally(() => this.setData({ loading: false }));
   },
 

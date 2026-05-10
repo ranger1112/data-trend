@@ -38,11 +38,13 @@ class CrawlJob(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     data_source_id: Mapped[int | None] = mapped_column(ForeignKey("data_sources.id"))
+    target_url: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     trigger: Mapped[str] = mapped_column(String(20), default="manual")
     total_records: Mapped[int] = mapped_column(Integer, default=0)
     imported_records: Mapped[int] = mapped_column(Integer, default=0)
     skipped_records: Mapped[int] = mapped_column(Integer, default=0)
+    error_type: Mapped[str | None] = mapped_column(String(40))
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)

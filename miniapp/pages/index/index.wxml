@@ -29,6 +29,12 @@
     <picker mode="selector" range="{{indicators}}" range-key="name" bindchange="onIndicatorChange">
       <view class="select">{{currentIndicator.name || '选择指标'}}</view>
     </picker>
+    <picker mode="selector" range="{{houseTypes}}" range-key="label" bindchange="onHouseTypeChange">
+      <view class="select">{{currentHouseType.label}}</view>
+    </picker>
+    <picker mode="selector" range="{{areaTypes}}" range-key="label" bindchange="onAreaTypeChange">
+      <view class="select">{{currentAreaType.label}}</view>
+    </picker>
   </view>
 
   <view class="panel">
@@ -46,7 +52,7 @@
   </view>
 
   <view class="panel">
-    <text class="panelTitle">趋势明细</text>
+    <text class="panelTitle">趋势明细（时间正序）</text>
     <block wx:for="{{trend}}" wx:key="period">
       <view class="row">
         <text>{{item.period}}</text>

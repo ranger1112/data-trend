@@ -74,20 +74,43 @@ def create_crawl_job(
             raise HTTPException(status_code=404, detail="data source not found")
         target_url = target_url or data_source.entry_url
 
-    job = repo.create_crawl_job(db, data_source_id=data_source.id if data_source else None)
+    if repo.has_active_crawl_job(db, data_source.id if data_source else None, target_url):
+        raise HTTPException(status_code=409, detail="crawl job already running for target")
+
+    job = repo.create_crawl_job(
+        db,
+        data_source_id=data_source.id if data_source else None,
+        target_url=target_url,
+    )
     if payload.run_now:
         background_tasks.add_task(run_crawl_job, job.id, target_url, data_source.id if data_source else None)
     return job
 
 
 @router.get("/crawl-jobs", response_model=list[CrawlJobOut])
-def list_crawl_jobs(db: Session = Depends(get_db)):
-    return repo.list_crawl_jobs(db)
+def list_crawl_jobs(
+    status: str | None = Query(default=None, pattern="^(pending|running|success|failed)$"),
+    data_source_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    return repo.list_crawl_jobs(db, status=status, data_source_id=data_source_id)
 
 
 @router.get("/crawl-records")
-def list_crawl_records(db: Session = Depends(get_db)):
-    return repo.list_crawl_records(db)
+def list_crawl_records(
+    status: str | None = Query(default=None, pattern="^(parsed|failed|skipped)$"),
+    keyword: str | None = None,
+    published_from: date | None = None,
+    published_to: date | None = None,
+    db: Session = Depends(get_db),
+):
+    return repo.list_crawl_records(
+        db,
+        status=status,
+        keyword=keyword,
+        published_from=published_from,
+        published_to=published_to,
+    )
 
 
 @router.get("/stat-values")
